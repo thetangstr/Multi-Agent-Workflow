@@ -106,17 +106,48 @@ The Multi-Agent Workflow (MAW) is Yarda's CI/CD system using four specialized AI
 
 ## Agents
 
-### 1. Builder Agent (`/builder`)
+### 1. PM Agent (`/pm`)
+
+**Command:** `.claude/commands/pm.md`
+**Skill:** `.claude/skills/pm-requirements/skill.md`
+
+**Responsibilities:**
+- Elaborate raw requirements into comprehensive specs
+- Determine epic (`epic:auth`, `epic:generation`, etc.)
+- Assign T-shirt size (XS/S/M/L/XL) with points
+- Define CUJs (Critical User Journeys)
+- Create/update Linear issues with:
+  - Epic label (`epic:<name>`)
+  - Size label (XS/S/M/L/XL)
+  - CUJ references (`#cuj-name`)
+  - Test plan (for M+ sizes)
+- Maintain `docs/EPIC_REGISTRY.md`
+- Update `docs/MANUAL_TESTING_GUIDE.md`
+
+**Commands:**
+```bash
+/pm                    # Interactive requirements session
+/pm <description>      # Elaborate specific feature
+/pm-requirements <desc> # Alias for /pm <description>
+```
+
+**Outputs:**
+- Linear issue with epic, size, CUJs, acceptance criteria
+- Test plan (for M+ sizes)
+- Updated EPIC_REGISTRY.md (if new CUJs)
+
+---
+
+### 2. Builder Agent (`/builder`)
 
 **Command:** `.claude/commands/builder.md`
 
 **Responsibilities:**
-- Pick up Linear issues from "Todo" state
-- Analyze and assign T-shirt size (XS/S/M/L/XL)
-- Add epic label and CUJ references
+- Pick up Linear issues with specs from PM
+- Research codebase and existing patterns
 - Implement feature on feature branch
 - Write unit tests (pytest for backend)
-- Create PR targeting `staging` branch
+- Create PR targeting `main` (XS/S/M) or `staging` (L/XL)
 - Auto-spawn Tester for M/L/XL issues
 
 **Commands:**
@@ -134,7 +165,7 @@ The Multi-Agent Workflow (MAW) is Yarda's CI/CD system using four specialized AI
 
 ---
 
-### 2. Tester Agent (`/tester`)
+### 3. Tester Agent (`/tester`)
 
 **Command:** `.claude/commands/tester.md`
 
@@ -142,9 +173,10 @@ The Multi-Agent Workflow (MAW) is Yarda's CI/CD system using four specialized AI
 - Pick up issues with `PR-Ready` label
 - Read test plan from Linear issue description
 - Run scoped E2E tests (playwright)
-- Use agent-browser MCP (preferred) or Playwright MCP
+- Use Chrome browser automation or Playwright MCP
 - Report results with screenshots
 - Verify staging deployments
+- Create Human Verification Checklist
 
 **Commands:**
 ```bash
@@ -170,16 +202,16 @@ The Multi-Agent Workflow (MAW) is Yarda's CI/CD system using four specialized AI
 
 ---
 
-### 3. Admin Agent (`/admin`)
+### 4. Admin Agent (`/admin`)
 
 **Command:** `.claude/commands/admin.md`
 
 **Responsibilities:**
-- Review PRs with `Human-Verified` label
-- Merge PR to staging branch
-- Monitor staging deployment
-- Spawn Tester for staging verification
-- Merge staging → main for production
+- Review PRs with `Tests-Passed` or `Human-Verified` label
+- Merge PR to main (XS/S/M) or staging (L/XL)
+- Monitor deployment
+- Spawn Tester for staging verification (L/XL)
+- Merge staging → main for production (L/XL)
 - Run production smoke tests
 - Mark issues as Done
 
@@ -194,33 +226,10 @@ The Multi-Agent Workflow (MAW) is Yarda's CI/CD system using four specialized AI
 ```
 
 **Outputs:**
-- Staging deployments
-- Production deployments (after human approval)
+- Staging deployments (L/XL)
+- Production deployments
 - `In-Production` label
 - Linear issue marked "Done"
-
----
-
-### 4. PM Agent (`/pm`)
-
-**Command:** `.claude/commands/pm.md`
-**Skill:** `.claude/skills/pm-requirements/skill.md`
-
-**Responsibilities:**
-- Elaborate raw requirements into comprehensive specs
-- Create/update Linear issues with:
-  - Epic label (`epic:<name>`)
-  - Size label (XS/S/M/L/XL)
-  - CUJ references (`#cuj-name`)
-  - Test plan (for M+ sizes)
-- Maintain `docs/EPIC_REGISTRY.md`
-- Update `docs/MANUAL_TESTING_GUIDE.md`
-
-**Commands:**
-```bash
-/pm                    # Interactive requirements session
-/pm-requirements <desc> # Elaborate specific feature
-```
 
 ---
 
