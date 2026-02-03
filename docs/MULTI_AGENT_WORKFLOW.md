@@ -1,52 +1,88 @@
 # Multi-Agent Development Workflow
 
-This document describes the 3-agent CI/CD workflow for Yarda v5 development.
+This document describes the 4-agent CI/CD workflow for Yarda v5 development.
 
 ## Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          MULTI-AGENT WORKFLOW                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Linear Issue (Todo)                                                        │
-│       │                                                                      │
-│       ▼                                                                      │
-│  ┌─────────────┐    PR-Ready    ┌─────────────┐   Tests-Passed   ┌────────┐│
-│  │   BUILDER   │ ──────────────▶│   TESTER    │ ─────────────────▶│ ADMIN  ││
-│  │   Agent     │                │   Agent     │                   │ Agent  ││
-│  │             │                │             │                   │        ││
-│  │ • Research  │ ◀────────────  │ • E2E tests │ ◀─────────────── │• Deploy││
-│  │ • Implement │  Tests-Failed  │ • Reports   │  Staging-Verified │• Monitor│
-│  │ • Unit test │                │ • Browser   │                   │        ││
-│  │ • Create PR │                │   automation│                   │        ││
-│  └─────────────┘                └─────────────┘                   └────────┘│
-│                                                                              │
-│                                       │                                      │
-│                                       ▼                                      │
-│                              ┌─────────────────┐                            │
-│                              │    PRODUCTION   │                            │
-│                              │  (Human Approval)│                            │
-│                              └─────────────────┘                            │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                          MULTI-AGENT WORKFLOW                                     │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Raw Requirement                                                                 │
+│       │                                                                          │
+│       ▼                                                                          │
+│  ┌─────────────┐  Issue Ready  ┌─────────────┐  PR-Ready  ┌─────────────┐       │
+│  │     PM      │ ─────────────▶│   BUILDER   │ ─────────▶│   TESTER    │       │
+│  │   Agent     │               │   Agent     │            │   Agent     │       │
+│  │             │               │             │            │             │       │
+│  │ • Elaborate │               │ • Research  │ ◀────────  │ • E2E tests │       │
+│  │ • Size      │               │ • Implement │ Tests-     │ • Reports   │       │
+│  │ • Epic/CUJ  │               │ • Unit test │ Failed     │ • Browser   │       │
+│  │ • Test plan │               │ • Create PR │            │   automation│       │
+│  └─────────────┘               └─────────────┘            └─────────────┘       │
+│                                                                  │              │
+│                                                     Tests-Passed │              │
+│                                                                  ▼              │
+│                                                          ┌─────────────┐        │
+│                                                          │   ADMIN     │        │
+│                                                          │   Agent     │        │
+│                                                          │             │        │
+│                                                          │ • Deploy    │        │
+│                                                          │ • Monitor   │        │
+│                                                          │ • Merge     │        │
+│                                                          └─────────────┘        │
+│                                                                  │              │
+│                                                                  ▼              │
+│                                                         ┌─────────────────┐     │
+│                                                         │   PRODUCTION    │     │
+│                                                         │ (Human Approval)│     │
+│                                                         └─────────────────┘     │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Agents
 
-### 1. Builder Agent (`/builder`)
+### 1. PM Agent (`/pm`)
+
+**Role:** Requirements elaboration and issue creation
+
+**Responsibilities:**
+- Elaborate raw requirements into comprehensive specs
+- Determine appropriate epic (`epic:auth`, `epic:generation`, etc.)
+- Assign T-shirt size (XS/S/M/L/XL) with points
+- Define CUJs (Critical User Journeys)
+- Create test plans for M+ sized issues
+- Create well-structured Linear issues
+- Maintain EPIC_REGISTRY.md and MANUAL_TESTING_GUIDE.md
+
+**Triggers:**
+- `/pm` - Interactive requirements elaboration session
+- `/pm <description>` - Elaborate specific feature from description
+
+**Outputs:**
+- Linear issue with:
+  - Epic label (`epic:<name>`)
+  - Size label and estimate (XS=1, S=2, M=3, L=5, XL=8)
+  - Acceptance criteria (checkboxes)
+  - CUJ references
+  - Test plan (for M+ sizes)
+- Updated EPIC_REGISTRY.md (if new CUJs)
+
+---
+
+### 2. Builder Agent (`/builder`)
 
 **Role:** Feature development and implementation
 
 **Responsibilities:**
-- Pick up Linear issues from "Todo" state
-- Research codebase using PM/UX skills
-- Create comprehensive specifications with CUJs
-- Create feature branch
-- Implement features
+- Pick up Linear issues with specs from PM
+- Research codebase and existing patterns
+- Implement features on feature branch
 - Write unit tests
 - Run pre-commit validation
-- Create pull request
+- Create pull request targeting staging (L/XL) or main (XS/S/M)
 - Handle test feedback from Tester
 
 **Triggers:**
@@ -60,7 +96,9 @@ This document describes the 3-agent CI/CD workflow for Yarda v5 development.
 - Pull request with test plan
 - Linear issue updated with "PR-Ready" label
 
-### 2. Tester Agent (`/tester`)
+---
+
+### 3. Tester Agent (`/tester`)
 
 **Role:** Automated testing and quality assurance
 
@@ -87,7 +125,9 @@ This document describes the 3-agent CI/CD workflow for Yarda v5 development.
 - "Tests-Passed" or "Tests-Failed" label
 - Staging verification ("Staging-Verified" label)
 
-### 3. Admin Agent (`/admin`)
+---
+
+### 4. Admin Agent (`/admin`)
 
 **Role:** Deployment and production management
 

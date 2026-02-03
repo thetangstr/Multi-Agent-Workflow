@@ -34,23 +34,57 @@ When given a feature description:
 2. **Identify user type** - Visitor, Homeowner, Pros, Admin
 3. **Map to epic** - Which epic does this belong to?
 
-### 1.2 Determine Epic
+### 1.2 Epic Selection Decision Tree
 
-Every feature belongs to exactly ONE epic:
+Use this flowchart to determine the correct epic:
 
-| Epic | Description | Keywords |
-|------|-------------|----------|
-| `epic:auth` | Authentication, session | login, oauth, magic link, session |
-| `epic:generation` | AI landscape generation | generate, design, style, areas |
-| `epic:payments` | Tokens, subscriptions | tokens, subscribe, billing, stripe |
-| `epic:marketplace` | Estimates, proposals | estimate, proposal, quote |
-| `epic:pro-mode` | 2D site plans | pro mode, 2D, camera, boundary |
-| `epic:pros-dashboard` | Pros dashboard | leads, dashboard, partner |
-| `epic:account` | User account | profile, settings, designs |
-| `epic:holiday` | Seasonal campaigns | holiday, christmas, decorator |
-| `epic:admin` | Admin tools | admin, internal, analytics |
+```
+Does feature involve user login, signup, or session?
+├─ YES → epic:auth
+└─ NO → Continue...
 
-If feature spans multiple epics → scope is too big, break it down.
+Does feature involve AI image generation or landscape designs?
+├─ YES → Is it Pro Mode (2D site plans, camera, boundary)?
+│        ├─ YES → epic:pro-mode
+│        └─ NO → epic:generation
+└─ NO → Continue...
+
+Does feature involve money (tokens, subscriptions, billing)?
+├─ YES → epic:payments
+└─ NO → Continue...
+
+Does feature involve estimates, proposals, or quotes?
+├─ YES → epic:marketplace
+└─ NO → Continue...
+
+Does feature involve the Pros dashboard or partner features?
+├─ YES → epic:pros-dashboard
+└─ NO → Continue...
+
+Does feature involve user profile, settings, or saved designs?
+├─ YES → epic:account
+└─ NO → Continue...
+
+Is this a seasonal/holiday campaign feature?
+├─ YES → epic:holiday
+└─ NO → epic:admin (internal/analytics)
+```
+
+### 1.3 Epic Reference Table
+
+| Epic | Description | Keywords | Example Features |
+|------|-------------|----------|------------------|
+| `epic:auth` | Authentication, session | login, oauth, magic link, session | Google OAuth, Magic Link signup |
+| `epic:generation` | AI landscape generation | generate, design, style, areas | Multi-area generation, style picker |
+| `epic:payments` | Tokens, subscriptions | tokens, subscribe, billing, stripe | Token packs, Pro subscription |
+| `epic:marketplace` | Estimates, proposals | estimate, proposal, quote | Cost estimates, proposal PDF |
+| `epic:pro-mode` | 2D site plans | pro mode, 2D, camera, boundary | Camera positioning, boundary detection |
+| `epic:pros-dashboard` | Pros dashboard | leads, dashboard, partner | Lead management, CRM features |
+| `epic:account` | User account | profile, settings, designs | Design gallery, user preferences |
+| `epic:holiday` | Seasonal campaigns | holiday, christmas, decorator | Holiday Decorator, social sharing |
+| `epic:admin` | Admin tools | admin, internal, analytics | Admin panel, usage analytics |
+
+**Rule:** If feature spans multiple epics → scope is too big, break it down.
 
 ---
 
@@ -134,15 +168,46 @@ Run the following command after staging deployment:
 - <explicitly not doing>
 ```
 
-### 3.3 Size Estimation
+### 3.3 Size Estimation Criteria
 
-| Size | Effort | Files | Test Scope |
-|------|--------|-------|------------|
-| `XS` | < 1 day | 1 file | Smoke only |
-| `S` | 1-2 days | 1-2 files | CUJ-level |
-| `M` | 3-5 days | 3-5 files | Epic-level |
-| `L` | 1-2 weeks | 6-10 files | Multi-epic |
-| `XL` | > 2 weeks | 10+ files | Full regression |
+| Size | Points | Files | Components | Data Model | Risk |
+|------|--------|-------|------------|------------|------|
+| `XS` | 1 | 1 | UI only | None | Cosmetic |
+| `S` | 2 | 1-2 | Single layer | None | Low |
+| `M` | 3 | 3-5 | 2 layers | Maybe | Medium |
+| `L` | 5 | 6-10 | Full stack | Yes | High |
+| `XL` | 8 | 10+ | System-wide | Major | Critical |
+
+### 3.4 Size Estimation Decision Tree
+
+```
+Is this a typo, copy change, or CSS-only fix?
+├─ YES → XS (1 point)
+└─ NO → Continue...
+
+Is this a single-file logic change or small bug fix?
+├─ YES → S (2 points)
+└─ NO → Continue...
+
+Does this touch 3-5 files or add a new component?
+├─ YES, frontend only → M (3 points)
+├─ YES, with backend → L (5 points)
+└─ NO → Continue...
+
+Is this an epic with child issues OR major refactor?
+├─ YES → XL (8 points)
+└─ NO → Use size from above
+```
+
+### 3.5 Real Examples by Size
+
+| Size | Example Issue | Why This Size |
+|------|---------------|---------------|
+| **XS** | "Fix typo in footer: 'Yarda' → 'Yarda AI'" | 1 file, 1 line, cosmetic |
+| **S** | "Add loading spinner to generate button" | 1 component, simple state |
+| **M** | "Add social share modal to holiday page" | New component + API call + 3-4 files |
+| **L** | "Implement freemium trial for Pro Mode" | Backend service + frontend UI + DB migration |
+| **XL** | "Adaptive camera positioning system" | New service + multiple endpoints + learning DB + playground UI |
 
 **Test Plan Required:** M, L, XL sizes MUST have test plan in description.
 
@@ -201,7 +266,51 @@ Use mcp__plugin_linear_linear__create_comment with:
 
 ---
 
-## Quick Reference
+## CUJ (Critical User Journey) Templates
+
+### CUJ Naming Convention
+
+```
+#<epic-prefix>-<action>[-<variant>]
+
+Examples:
+- #auth-google-login     (auth epic, google login action)
+- #gen-first             (generation epic, first generation)
+- #pay-tokens-50         (payments epic, 50 token purchase)
+- #pro-boundary-corner   (pro-mode epic, corner lot boundary)
+```
+
+### CUJ Template Examples
+
+**Authentication CUJs:**
+```markdown
+- #auth-google-login: User signs in with Google OAuth → lands on dashboard
+- #auth-magic-link: User requests magic link → receives email → clicks → logged in
+- #auth-logout: User clicks logout → session cleared → redirected to home
+```
+
+**Generation CUJs:**
+```markdown
+- #gen-first: New user completes first generation with default settings
+- #gen-multi-area: User generates design for front yard + backyard
+- #gen-style-change: User regenerates with different style selection
+```
+
+**Payments CUJs:**
+```markdown
+- #pay-tokens-50: User purchases 50-token pack via Stripe checkout
+- #pay-subscribe: User subscribes to Pro plan → immediate access
+- #pay-cancel: User cancels subscription → retains access until period end
+```
+
+**Pro Mode CUJs:**
+```markdown
+- #pro-boundary-detect: System detects property boundary from satellite
+- #pro-camera-position: Camera auto-positions for optimal view
+- #pro-generate-fusion: Multi-source fusion generates 2D site plan
+```
+
+### CUJ to Test Command Mapping
 
 | CUJ Reference | Test Command |
 |---------------|--------------|

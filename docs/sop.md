@@ -53,36 +53,53 @@ See `.claude/commands/workon.md` for full orchestration logic.
 The Multi-Agent Workflow (MAW) is Yarda's CI/CD system using four specialized AI agents that coordinate via Linear labels. Each agent runs in its own Claude Code session.
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         MULTI-AGENT WORKFLOW                                  │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Linear Issue (Todo)                                                         │
-│       │                                                                      │
-│       ▼                                                                      │
-│  ┌─────────────┐    PR-Ready    ┌─────────────┐   Tests-Passed   ┌────────┐ │
-│  │   BUILDER   │ ──────────────▶│   TESTER    │ ────────────────▶│ ADMIN  │ │
-│  │   Agent     │                │   Agent     │                  │ Agent  │ │
-│  │             │                │             │                  │        │ │
-│  │ • Research  │ ◀────────────  │ • E2E tests │                  │• Deploy│ │
-│  │ • Implement │  Tests-Failed  │ • Reports   │                  │• Merge │ │
-│  │ • Create PR │                │ • Validate  │                  │        │ │
-│  └─────────────┘                └─────────────┘                  └────────┘ │
-│                                       │                               │      │
-│                                       │ Staging-Verified              │      │
-│                                       ▼                               │      │
-│                              ┌─────────────────┐                      │      │
-│                              │ HUMAN VALIDATION │                     │      │
-│                              │ (Human-Verified) │◀────────────────────┘      │
-│                              └────────┬────────┘                             │
-│                                       │                                      │
-│                                       ▼                                      │
-│                              ┌─────────────────┐                             │
-│                              │   PRODUCTION    │                             │
-│                              │  (In-Production)│                             │
-│                              └─────────────────┘                             │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────┐
+│                            MULTI-AGENT WORKFLOW                                     │
+├────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                    │
+│  Raw Requirement                                                                   │
+│       │                                                                            │
+│       ▼                                                                            │
+│  ┌─────────────┐  Issue Ready  ┌─────────────┐  PR-Ready  ┌─────────────┐         │
+│  │     PM      │ ─────────────▶│   BUILDER   │ ─────────▶│   TESTER    │         │
+│  │   Agent     │               │   Agent     │            │   Agent     │         │
+│  │             │               │             │            │             │         │
+│  │ • Elaborate │               │ • Research  │ ◀────────  │ • E2E tests │         │
+│  │ • Size      │               │ • Implement │ Tests-     │ • Reports   │         │
+│  │ • Epic/CUJ  │               │ • Create PR │ Failed     │ • Validate  │         │
+│  │ • Test plan │               └─────────────┘            └─────────────┘         │
+│  └─────────────┘                                                 │                │
+│                                                                  │ Tests-Passed   │
+│                                                                  ▼                │
+│                                                         ┌─────────────┐           │
+│                                                         │   ADMIN     │           │
+│                                                         │   Agent     │           │
+│                                                         │             │           │
+│                                                         │ • Deploy    │           │
+│                                                         │ • Merge     │           │
+│                                                         └─────────────┘           │
+│                                                                  │                │
+│                                                    ┌─────────────┴─────────────┐  │
+│                                                    │                           │  │
+│                                           (XS/S/M) ▼                  (L/XL)   ▼  │
+│                                         ┌───────────────┐        ┌──────────────┐│
+│                                         │  PRODUCTION   │        │   STAGING    ││
+│                                         │   (direct)    │        │  (validate)  ││
+│                                         └───────────────┘        └──────┬───────┘│
+│                                                                         │        │
+│                                                                         ▼        │
+│                                                                ┌────────────────┐│
+│                                                                │HUMAN VALIDATION││
+│                                                                │(Human-Verified)││
+│                                                                └───────┬────────┘│
+│                                                                        │         │
+│                                                                        ▼         │
+│                                                                ┌───────────────┐ │
+│                                                                │  PRODUCTION   │ │
+│                                                                │(In-Production)│ │
+│                                                                └───────────────┘ │
+│                                                                                   │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
