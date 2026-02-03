@@ -469,6 +469,7 @@ DESIGN.md (design tokens) → Stitch (AI UI generation) → React components
 
 ## Related Documentation
 
+- [protocol.md](./protocol.md) - Agent communication protocol (handoffs, schemas, state machine)
 - [EPIC_REGISTRY.md](../EPIC_REGISTRY.md) - Epic/CUJ canonical list
 - [MANUAL_TESTING_GUIDE.md](../MANUAL_TESTING_GUIDE.md) - Manual test procedures
 - [MULTI_AGENT_WORKFLOW.md](../MULTI_AGENT_WORKFLOW.md) - Detailed workflow docs
