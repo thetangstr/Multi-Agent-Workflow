@@ -96,13 +96,7 @@ Is this a seasonal/holiday campaign feature?
 
 ## Phase 2: Requirements Elaboration
 
-Use the PM Requirements Skill for structured elaboration:
-
-```
-Read and follow: .claude/skills/pm-requirements/skill.md
-```
-
-The skill covers:
+Use this structured framework for requirements elaboration:
 1. Problem Statement
 2. User Stories
 3. Functional Requirements
@@ -470,7 +464,6 @@ Examples:
 
 ## Related Files
 
-- **PM Skill:** `.claude/skills/pm-requirements/skill.md`
 - **Epic Registry:** `docs/EPIC_REGISTRY.md`
 - **Manual Testing:** `docs/MANUAL_TESTING_GUIDE.md`
 - **MAW SOP:** `docs/maw/sop.md`
