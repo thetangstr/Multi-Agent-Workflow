@@ -48,7 +48,7 @@ This document describes the 4-agent CI/CD workflow for Yarda v5 development.
 
 **Role:** Requirements elaboration and issue creation
 
-**Responsibilities:**
+**Responsibilities (Start of Flow):**
 - Elaborate raw requirements into comprehensive specs
 - Determine appropriate epic (`epic:auth`, `epic:generation`, etc.)
 - Assign T-shirt size (XS/S/M/L/XL) with points
@@ -57,11 +57,20 @@ This document describes the 4-agent CI/CD workflow for Yarda v5 development.
 - Create well-structured Linear issues
 - Maintain EPIC_REGISTRY.md and MANUAL_TESTING_GUIDE.md
 
+**Responsibilities (Pre-Human Validation):**
+- Validate features on **PR Preview** as a **real user** using browser
+- Walk through each CUJ on PR Preview environment (Vercel preview + staging backend)
+- Verify acceptance criteria are met from user perspective
+- Recommend for human sign-off or signal Builder for fixes
+
+**Environment:** PR Preview (validation happens BEFORE staging deployment)
+
 **Triggers:**
 - `/pm` - Interactive requirements elaboration session
 - `/pm <description>` - Elaborate specific feature from description
+- `/pm validate YAR-XXX` - Pre-human validation of deployed feature
 
-**Outputs:**
+**Outputs (Requirements):**
 - Linear issue with:
   - Epic label (`epic:<name>`)
   - Size label and estimate (XS=1, S=2, M=3, L=5, XL=8)
@@ -69,6 +78,11 @@ This document describes the 4-agent CI/CD workflow for Yarda v5 development.
   - CUJ references
   - Test plan (for M+ sizes)
 - Updated EPIC_REGISTRY.md (if new CUJs)
+
+**Outputs (Validation):**
+- Validation report with screenshots/GIFs
+- `PM-Validated` label (if passed)
+- Sub-issues for any UX problems found
 
 ---
 
@@ -79,6 +93,8 @@ This document describes the 4-agent CI/CD workflow for Yarda v5 development.
 **Responsibilities:**
 - Pick up Linear issues with specs from PM
 - Research codebase and existing patterns
+- **L issues:** Consider SpecKit for structured specification
+- **XL issues:** Use full SpecKit workflow (required)
 - Implement features on feature branch
 - Write unit tests
 - Run pre-commit validation
@@ -88,10 +104,12 @@ This document describes the 4-agent CI/CD workflow for Yarda v5 development.
 **Triggers:**
 - `/builder` - Auto-pickup highest priority "Todo" issue
 - `/builder YAR-5` - Work on specific issue
+- `/speckit.specify` → `/speckit.clarify` → `/speckit.plan` → `/speckit.tasks` → `/speckit.implement` (L: optional, XL: required)
 
 **Outputs:**
 - Feature branch with implementation
 - `specs/<number>-<name>/spec.md` with CUJs
+- SpecKit artifacts (for L/XL): `spec.md`, `plan.md`, `tasks.md`
 - Unit tests
 - Pull request with test plan
 - Linear issue updated with "PR-Ready" label
@@ -156,84 +174,158 @@ This document describes the 4-agent CI/CD workflow for Yarda v5 development.
 
 ---
 
+## Environments
+
+| Environment | Frontend URL | Backend URL | Purpose |
+|-------------|--------------|-------------|---------|
+| **PR Preview** | `yarda-v5-frontend-*.vercel.app` | `yardav5-staging-b19c.up.railway.app` | Per-PR testing, PM validation, human verification |
+| **Staging** | `staging.yarda.ai` | `yardav5-staging-b19c.up.railway.app` | L/XL staging verification after merge |
+| **Production** | `yarda.pro` | `yardav5-production.up.railway.app` | Live production |
+
+---
+
 ## Linear Label State Machine
 
-Labels track the state of each issue through the workflow:
+Labels track the state of each issue through the workflow.
 
+### XS/S/M Flow (Direct to Production)
 ```
-                    ┌─────────────────────────────────────────┐
-                    │                                         │
-                    ▼                                         │
-┌──────────┐   ┌──────────┐   ┌─────────────┐   ┌──────────────┐
-│ PR-Ready │──▶│ Testing  │──▶│Tests-Passed │──▶│ On-Staging   │
-└──────────┘   └──────────┘   └─────────────┘   └──────────────┘
-     │              │                                  │
-     │              ▼                                  ▼
-     │         ┌─────────────┐              ┌─────────────────┐
-     │         │Tests-Failed │              │Staging-Verified │
-     │         └─────────────┘              └─────────────────┘
-     │              │                                  │
-     │              │                                  ▼
-     │              │                       ┌──────────────────┐
-     └──────────────┘                       │ Human-Verified   │
-           (back to Builder)                └──────────────────┘
-                                                       │
-                                                       ▼
-                                            ┌─────────────────┐
-                                            │  In-Production  │
-                                            └─────────────────┘
+PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → In-Production
+[PR Prev]  [PR Prev]  [PR Preview]   [PR Preview]   [PR Preview]    [Production]
 ```
 
-| Label | Color | Set By | Meaning |
-|-------|-------|--------|---------|
-| `PR-Ready` | Blue #2196F3 | Builder | PR created, ready for testing |
-| `Testing` | Yellow #FFC107 | Tester | Tester actively testing |
-| `Tests-Passed` | Green #4CAF50 | Tester | All tests passed |
-| `Tests-Failed` | Red #F44336 | Tester | Failures found, back to Builder |
-| `On-Staging` | Purple #9C27B0 | Admin | Deployed to staging |
-| `Staging-Verified` | Light Green #8BC34A | Tester | Staging E2E passed |
-| `Human-Verified` | Orange #FF9800 | Human | Human approved, ready for production |
-| `In-Production` | Gray #607D8B | Admin | Live in production |
+### L/XL Flow (Via Staging)
+```
+PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → On-Staging → Staging-Verified → In-Production
+[PR Prev]  [PR Prev]  [PR Preview]   [PR Preview]   [PR Preview]    [Staging]    [Staging]          [Production]
+```
+
+### Complete State Diagram
+
+```
+                    ┌────────────────────────────────────────────────────┐
+                    │                                                    │
+                    ▼                                                    │
+┌──────────┐   ┌──────────┐   ┌─────────────┐   ┌──────────────┐        │
+│ PR-Ready │──▶│ Testing  │──▶│Tests-Passed │──▶│ PM-Validated │        │
+│          │   │          │   │             │   │              │        │
+│[PR Prev] │   │[PR Prev] │   │[PR Preview] │   │[PR Preview]  │        │
+└──────────┘   └──────────┘   └─────────────┘   └──────────────┘        │
+     ▲              │                                  │                │
+     │              ▼                                  ▼                │
+     │         ┌─────────────┐              ┌──────────────────┐        │
+     │         │Tests-Failed │              │ Human-Verified   │        │
+     │         └─────────────┘              │                  │        │
+     │              │                       │ [PR Preview]     │        │
+     └──────────────┘                       └──────────────────┘        │
+           (back to Builder)                          │                 │
+                                        ┌─────────────┴─────────────┐   │
+                                        │                           │   │
+                               (XS/S/M) ▼                  (L/XL)   ▼   │
+                              ┌──────────────┐         ┌──────────────┐ │
+                              │In-Production │         │ On-Staging   │ │
+                              │              │         │              │ │
+                              │[production]  │         │ [staging]    │ │
+                              └──────────────┘         └──────────────┘ │
+                                                              │         │
+                                                              ▼         │
+                                                    ┌─────────────────┐ │
+                                                    │Staging-Verified │ │
+                                                    │                 │ │
+                                                    │ [staging]       │ │
+                                                    └─────────────────┘ │
+                                                              │         │
+                                                              ▼         │
+                                                    ┌──────────────┐    │
+                                                    │In-Production │    │
+                                                    │              │    │
+                                                    │[production]  │    │
+                                                    └──────────────┘    │
+                                                              │         │
+                                                              └─────────┘
+                                                        (Tests-Failed possible)
+```
+
+| Label | Color | Set By | Environment | Meaning |
+|-------|-------|--------|-------------|---------|
+| `PR-Ready` | Blue #2196F3 | Builder | PR Preview | PR created, ready for testing |
+| `Testing` | Yellow #FFC107 | Tester | PR Preview | Tester actively testing |
+| `Tests-Passed` | Green #4CAF50 | Tester | PR Preview | All tests passed |
+| `Tests-Failed` | Red #F44336 | Tester | Any | Failures found, back to Builder |
+| `PM-Validated` | Teal #009688 | PM | PR Preview | PM validated as real user |
+| `Human-Verified` | Orange #FF9800 | Human | PR Preview | Human approved |
+| `On-Staging` | Purple #9C27B0 | Admin | Staging | Deployed to staging (L/XL only) |
+| `Staging-Verified` | Light Green #8BC34A | Tester | Staging | Staging E2E passed (L/XL only) |
+| `In-Production` | Gray #607D8B | Admin | Production | Live in production |
 
 ---
 
 ## Workflow Scenarios
 
-### Happy Path
+### Happy Path - XS/S/M (Direct to Production)
 
-1. **Builder** picks up YAR-5 from "Todo"
-2. **Builder** researches, implements, creates PR
-3. **Builder** adds "PR-Ready" label, signals Tester
-4. **Tester** runs E2E tests, all pass
-5. **Tester** adds "Tests-Passed" label, signals Admin
-6. **Admin** reviews, deploys to staging
-7. **Admin** adds "On-Staging" label, signals Tester
-8. **Tester** runs staging E2E, passes
-9. **Tester** adds "Staging-Verified" label
-10. **Admin** requests human approval
-11. **Human** approves
-12. **Admin** deploys to production
-13. **Admin** marks "Done" with "In-Production"
+| Step | Agent | Action | Environment |
+|------|-------|--------|-------------|
+| 1 | **PM** | Creates issue with epic, size, CUJs, test plan | - |
+| 2 | **Builder** | Picks up YAR-5, implements, creates PR | localhost:3000 |
+| 3 | **Builder** | Adds "PR-Ready" label, signals Tester | - |
+| 4 | **Tester** | Runs E2E tests, all pass | PR Preview |
+| 5 | **Tester** | Adds "Tests-Passed" label | PR Preview |
+| 6 | **PM** | Validates as real user, adds "PM-Validated" | PR Preview |
+| 7 | **Human** | Approves, adds "Human-Verified" | PR Preview |
+| 8 | **Admin** | Merges to main, deploys | Production |
+| 9 | **Admin** | Marks "Done" with "In-Production" | Production |
+
+### Happy Path - L/XL (Via Staging)
+
+| Step | Agent | Action | Environment |
+|------|-------|--------|-------------|
+| 1 | **PM** | Creates issue with epic, size, CUJs, test plan | - |
+| 2 | **Builder** | Runs SpecKit workflow (L: recommended, XL: required) | localhost:3000 |
+| 3 | **Builder** | Implements feature, creates PR | localhost:3000 |
+| 4 | **Builder** | Adds "PR-Ready" label, signals Tester | - |
+| 5 | **Tester** | Runs E2E tests, all pass | PR Preview |
+| 6 | **Tester** | Adds "Tests-Passed" label | PR Preview |
+| 7 | **PM** | Validates as real user, adds "PM-Validated" | PR Preview |
+| 8 | **Human** | Approves, adds "Human-Verified" | PR Preview |
+| 9 | **Admin** | Merges to staging, adds "On-Staging" | Staging |
+| 10 | **Tester** | Runs staging E2E, adds "Staging-Verified" | Staging |
+| 11 | **Admin** | Promotes staging → main | Production |
+| 12 | **Admin** | Marks "Done" with "In-Production" | Production |
 
 ### Test Failure Scenario
 
-1. **Builder** creates PR with "PR-Ready"
-2. **Tester** runs tests, 2 failures found
-3. **Tester** creates sub-issues YAR-5-bug-1, YAR-5-bug-2
-4. **Tester** removes "PR-Ready", adds "Tests-Failed"
-5. **Builder** receives feedback, fixes bugs
-6. **Builder** pushes fixes, re-adds "PR-Ready"
-7. **Tester** re-tests, all pass
-8. Flow continues to Admin...
+| Step | Action | Environment |
+|------|--------|-------------|
+| 1 | **Builder** creates PR with "PR-Ready" | PR Preview created |
+| 2 | **Tester** runs tests, 2 failures found | PR Preview |
+| 3 | **Tester** creates sub-issues, adds "Tests-Failed" | - |
+| 4 | **Builder** fixes bugs, pushes to PR | localhost |
+| 5 | **Builder** re-adds "PR-Ready" | - |
+| 6 | **Tester** re-tests, all pass | PR Preview |
+| 7 | Flow continues to PM validation... | PR Preview |
 
-### Staging Failure Scenario
+### PM Validation Failure Scenario
 
-1. **Admin** deploys to staging
-2. **Tester** runs staging E2E, failures found
-3. **Tester** removes "On-Staging", adds "Tests-Failed"
-4. **Builder** fixes, **Tester** re-tests
-5. **Admin** re-deploys to staging
-6. Flow continues...
+| Step | Action | Environment |
+|------|--------|-------------|
+| 1 | **PM** validates feature as real user | PR Preview |
+| 2 | **PM** finds UX issues or unmet criteria | PR Preview |
+| 3 | **PM** creates sub-issues, removes "Tests-Passed" | - |
+| 4 | **Builder** fixes issues | localhost |
+| 5 | **Tester** re-runs tests | PR Preview |
+| 6 | **PM** re-validates, adds "PM-Validated" | PR Preview |
+| 7 | Flow continues to human verification... | PR Preview |
+
+### Staging Failure Scenario (L/XL only)
+
+| Step | Action | Environment |
+|------|--------|-------------|
+| 1 | **Admin** deploys to staging | Staging |
+| 2 | **Tester** runs staging E2E, failures found | Staging |
+| 3 | **Tester** removes "On-Staging", adds "Tests-Failed" | - |
+| 4 | **Builder** fixes, pushes to PR | localhost |
+| 5 | Workflow restarts from PR testing | PR Preview |
 
 ---
 
@@ -243,6 +335,7 @@ Labels track the state of each issue through the workflow:
 |---------|-------|-------------|
 | `/pm` | PM | Elaborate requirements, create issues |
 | `/pm <desc>` | PM | Elaborate specific feature |
+| `/pm validate YAR-5` | PM | Pre-human validation of deployed feature |
 | `/builder` | Builder | Auto-pickup highest priority issue |
 | `/builder YAR-5` | Builder | Work on specific issue |
 | `/tester` | Tester | Auto-pickup oldest PR-Ready issue |

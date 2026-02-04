@@ -54,6 +54,31 @@ Each agent transition requires specific data to be passed. Missing required data
 | Steps to reproduce | Yes | Sub-issues | How to trigger |
 | `Tests-Failed` label | Yes | Linear labels | Signals failure |
 
+### Tester → PM (Pre-Human Validation)
+
+| Field | Required | Location | Description |
+|-------|----------|----------|-------------|
+| PR Preview URL | Yes | Linear comment | Vercel preview URL for validation |
+| Backend URL | Yes | Linear comment | Staging backend URL |
+| `Tests-Passed` label | Yes | Linear labels | Signals tests passed on PR Preview |
+| Test results summary | Yes | Linear comment | What tests passed |
+| Acceptance criteria | Yes | Issue description | Original requirements to validate |
+
+**Environment:** PR Preview (Vercel preview + staging backend)
+
+### PM → Human (After Validation)
+
+| Field | Required | Location | Description |
+|-------|----------|----------|-------------|
+| Validation report | Yes | Linear comment | Pass/fail with evidence |
+| PR Preview URL | Yes | Linear comment | Where human should verify |
+| Screenshots/GIFs | Yes | Linear comment | Visual proof |
+| UX observations | Recommended | Linear comment | Any friction points |
+| `PM-Validated` label | Yes | Linear labels | Signals PM approval |
+| Recommendation | Yes | Linear comment | APPROVED or REQUIRES FIXES |
+
+**Environment:** PR Preview (same as PM validation)
+
 ### Admin → Production
 
 | Field | Required | Location | Description |
@@ -112,6 +137,7 @@ Each agent transition requires specific data to be passed. Missing required data
 | `Tests-Failed` | Any test fails | Tester |
 | `On-Staging` | After staging deploy | Admin |
 | `Staging-Verified` | Staging tests pass | Tester |
+| `PM-Validated` | PM validates as user | PM |
 | `Human-Verified` | Human approves | Human |
 | `In-Production` | Live in prod | Admin |
 
@@ -247,6 +273,47 @@ None
 @builder Fixes needed. See sub-issues for details.
 ```
 
+### PM Validation Report
+
+```markdown
+## 🔍 PM Pre-Human Validation Report
+
+**Issue:** YAR-<number>
+**Environment:** <staging|production>
+**Validated:** <timestamp>
+
+### Acceptance Criteria
+- [x] <criterion 1> ✅
+- [x] <criterion 2> ✅
+- [ ] <criterion 3> ❌ Issue: <description>
+
+### CUJ Walkthroughs
+| CUJ | Status | Notes |
+|-----|--------|-------|
+| #<cuj-1> | ✅ Pass | <notes> |
+| #<cuj-2> | ✅ Pass | <notes> |
+
+### UX Observations
+- <any friction points>
+- <suggestions for improvement>
+
+### Screenshots/GIFs
+<attach visual evidence of user journey>
+
+### Console Errors
+None (or list any issues)
+
+---
+
+### Recommendation
+
+**✅ APPROVED for Human Sign-off**
+OR
+**❌ REQUIRES FIXES** - See sub-issues
+
+@human Ready for final verification.
+```
+
 ### Admin → Production Complete
 
 ```markdown
@@ -283,6 +350,11 @@ def get_owner(issue) -> str | None:
     """
     Determine which agent should act on this issue.
     Returns: 'pm', 'builder', 'tester', 'admin', or None (human/done)
+
+    Environment context:
+    - PR-Ready through PM-Validated: PR Preview environment
+    - On-Staging through Staging-Verified: Staging environment
+    - In-Production: Production environment
     """
     labels = {label.name for label in issue.labels}
 
@@ -290,21 +362,29 @@ def get_owner(issue) -> str | None:
     if "In-Production" in labels:
         return None
 
-    # Admin owns - ready for production
-    if "Human-Verified" in labels:
+    # L/XL: After staging verification, Admin promotes to production
+    if "Staging-Verified" in labels:
         return "admin"
 
-    # Human owns - awaiting validation (no agent)
-    if "Staging-Verified" in labels:
-        return None  # Human must add Human-Verified
-    if "Tests-Passed" in labels:
-        return None  # Human must validate
-
-    # Tester owns - staging verification
+    # L/XL: Tester verifies staging deployment
     if "On-Staging" in labels:
         return "tester"
 
-    # Tester owns - PR testing
+    # Admin deploys after Human-Verified
+    # - XS/S/M: directly to production
+    # - L/XL: to staging first
+    if "Human-Verified" in labels:
+        return "admin"
+
+    # Human owns - awaiting final validation on PR Preview
+    if "PM-Validated" in labels:
+        return None  # Human must add Human-Verified
+
+    # PM owns - needs pre-human validation on PR Preview
+    if "Tests-Passed" in labels:
+        return "pm"  # PM validates on PR Preview
+
+    # Tester owns - PR testing on PR Preview
     if "PR-Ready" in labels:
         return "tester"
     if "Testing" in labels:
@@ -421,12 +501,18 @@ Each agent MUST validate before handing off:
 - [ ] Handoff comment posted
 - [ ] `PR-Ready` label added
 
-**Tester → Admin:**
-- [ ] All tests executed
-- [ ] Results documented with screenshots
-- [ ] Sub-issues created for failures (if any)
-- [ ] Human verification checklist posted
-- [ ] Correct label set (`Tests-Passed` or `Tests-Failed`)
+**Tester → PM (Pre-Human Validation):**
+- [ ] Staging tests passed
+- [ ] `Staging-Verified` label added
+- [ ] Test results posted
+
+**PM → Human:**
+- [ ] Feature validated as real user
+- [ ] All acceptance criteria checked
+- [ ] CUJ walkthroughs completed
+- [ ] Screenshots/GIFs captured
+- [ ] Validation report posted
+- [ ] `PM-Validated` label added
 
 **Admin → Production:**
 - [ ] `Human-Verified` label present
@@ -440,60 +526,96 @@ Each agent MUST validate before handing off:
 
 ## 7. Label State Machine
 
+### XS/S/M Flow (Direct to Production)
 ```
-                                    ┌────────────────┐
-                                    │                │
-                                    ▼                │
-┌──────────┐   ┌──────────┐   ┌─────────────┐   ┌───┴──────────┐
-│ (no      │──▶│ PR-Ready │──▶│   Testing   │──▶│ Tests-Passed │
-│  label)  │   └──────────┘   └─────────────┘   └──────────────┘
-└──────────┘         ▲              │                   │
-     │               │              ▼                   │
-     │               │        ┌─────────────┐           │
-     │               └────────│Tests-Failed │           │
-     │                        └─────────────┘           │
-     │                                                  │
-     │         ┌────────────────────────────────────────┘
-     │         │
-     │         ▼
-     │   ┌──────────────┐   ┌─────────────────┐   ┌──────────────┐
-     │   │  On-Staging  │──▶│Staging-Verified │──▶│Human-Verified│
-     │   └──────────────┘   └─────────────────┘   └──────────────┘
-     │         │                                         │
-     │         ▼                                         │
-     │   ┌─────────────┐                                 │
-     └───│Tests-Failed │                                 │
-         └─────────────┘                                 │
-                                                         ▼
-                                                  ┌──────────────┐
-                                                  │In-Production │
-                                                  └──────────────┘
+PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → In-Production
+[PR Prev]  [PR Prev]  [PR Preview]   [PR Preview]   [PR Preview]    [Production]
+              ↓
+         Tests-Failed (back to Builder)
+```
+
+### L/XL Flow (Via Staging)
+```
+PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → On-Staging → Staging-Verified → In-Production
+[PR Prev]  [PR Prev]  [PR Preview]   [PR Preview]   [PR Preview]    [Staging]    [Staging]          [Production]
+              ↓                                                          ↓
+         Tests-Failed                                              Tests-Failed
+```
+
+### Complete State Diagram
+
+```
+                    ┌────────────────────────────────────────────────────┐
+                    │                                                    │
+                    ▼                                                    │
+┌──────────┐   ┌──────────┐   ┌─────────────┐   ┌──────────────┐        │
+│ PR-Ready │──▶│ Testing  │──▶│Tests-Passed │──▶│ PM-Validated │        │
+│          │   │          │   │             │   │              │        │
+│[PR Prev] │   │[PR Prev] │   │[PR Preview] │   │[PR Preview]  │        │
+└──────────┘   └──────────┘   └─────────────┘   └──────────────┘        │
+     ▲              │                                  │                │
+     │              ▼                                  ▼                │
+     │         ┌─────────────┐              ┌──────────────────┐        │
+     │         │Tests-Failed │              │ Human-Verified   │        │
+     │         └─────────────┘              │                  │        │
+     │              │                       │ [PR Preview]     │        │
+     └──────────────┘                       └──────────────────┘        │
+           (back to Builder)                          │                 │
+                                        ┌─────────────┴─────────────┐   │
+                                        │                           │   │
+                               (XS/S/M) ▼                  (L/XL)   ▼   │
+                              ┌──────────────┐         ┌──────────────┐ │
+                              │In-Production │         │ On-Staging   │ │
+                              │              │         │              │ │
+                              │[production]  │         │ [staging]    │ │
+                              └──────────────┘         └──────────────┘ │
+                                                              │         │
+                                                              ▼         │
+                                                    ┌─────────────────┐ │
+                                                    │Staging-Verified │ │
+                                                    │                 │ │
+                                                    │ [staging]       │ │
+                                                    └─────────────────┘ │
+                                                              │         │
+                                                              ▼         │
+                                                    ┌──────────────┐    │
+                                                    │In-Production │    │
+                                                    │              │    │
+                                                    │[production]  │    │
+                                                    └──────────────┘    │
+                                                              │         │
+                                                              └─────────┘
+                                                        (Tests-Failed possible)
 ```
 
 ### Valid Transitions
 
-| From | To | Triggered By |
-|------|----|--------------|
-| (none) | PR-Ready | Builder creates PR |
-| PR-Ready | Testing | Tester starts |
-| Testing | Tests-Passed | All tests pass |
-| Testing | Tests-Failed | Any test fails |
-| Tests-Failed | PR-Ready | Builder fixes |
-| Tests-Passed | On-Staging | Admin deploys (L/XL) |
-| Tests-Passed | In-Production | Admin deploys (XS/S/M) |
-| On-Staging | Staging-Verified | Tester verifies staging |
-| On-Staging | Tests-Failed | Staging tests fail |
-| Staging-Verified | Human-Verified | Human approves |
-| Human-Verified | In-Production | Admin promotes |
+| From | To | Triggered By | Environment |
+|------|----|--------------|-------------|
+| (none) | PR-Ready | Builder creates PR | PR Preview created |
+| PR-Ready | Testing | Tester starts | PR Preview |
+| Testing | Tests-Passed | All tests pass | PR Preview |
+| Testing | Tests-Failed | Any test fails | PR Preview |
+| Tests-Failed | PR-Ready | Builder fixes | localhost → PR Preview |
+| Tests-Passed | PM-Validated | PM validates | PR Preview |
+| PM-Validated | Human-Verified | Human approves | PR Preview |
+| Human-Verified | In-Production | Admin deploys (XS/S/M) | Production |
+| Human-Verified | On-Staging | Admin deploys (L/XL) | Staging |
+| On-Staging | Staging-Verified | Tester verifies | Staging |
+| On-Staging | Tests-Failed | Staging tests fail | Staging |
+| Staging-Verified | In-Production | Admin promotes | Production |
 
 ### Invalid Transitions (Blocked)
 
 | From | To | Reason |
 |------|----|--------|
-| PR-Ready | In-Production | Must pass testing |
+| PR-Ready | In-Production | Must pass testing, PM validation, human verification |
 | Tests-Failed | In-Production | Must fix and retest |
-| On-Staging | In-Production | Must have Human-Verified |
+| Tests-Passed | On-Staging | Must have PM-Validated and Human-Verified first |
+| Tests-Passed | In-Production | Must have PM-Validated and Human-Verified first |
+| On-Staging | In-Production | L/XL must have Staging-Verified |
 | (any) | Human-Verified | Only humans can set |
+| (any) | PM-Validated | Only PM agent can set |
 
 ---
 
@@ -501,22 +623,24 @@ Each agent MUST validate before handing off:
 
 ### Agent Ownership by Label
 
-| Labels Present | Owner |
-|----------------|-------|
-| In-Production | None (done) |
-| Human-Verified | Admin |
-| Staging-Verified | Human |
-| Tests-Passed | Human |
-| On-Staging | Tester |
-| PR-Ready, Testing | Tester |
-| Tests-Failed | Builder |
-| (has spec, no PR) | Builder |
-| (missing epic/size) | PM |
+| Labels Present | Owner | Environment |
+|----------------|-------|-------------|
+| In-Production | None (done) | Production |
+| Staging-Verified | Admin (promote to prod) | Staging |
+| On-Staging | Tester (staging verification) | Staging |
+| Human-Verified | Admin (deploy) | PR Preview |
+| PM-Validated | Human (final approval) | PR Preview |
+| Tests-Passed | PM (pre-human validation) | PR Preview |
+| PR-Ready, Testing | Tester | PR Preview |
+| Tests-Failed | Builder | localhost |
+| (has spec, no PR) | Builder | localhost |
+| (missing epic/size) | PM | - |
 
 ### Required Comment Tags
 
 | Tag | Purpose |
 |-----|---------|
+| `@pm` | Notify PM agent (for validation) |
 | `@builder` | Notify Builder agent |
 | `@tester` | Notify Tester agent |
 | `@admin` | Notify Admin agent |
