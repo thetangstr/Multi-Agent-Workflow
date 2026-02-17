@@ -79,7 +79,7 @@ Each agent transition requires specific data to be passed. Missing required data
 
 **Environment:** PR Preview (same as PM validation)
 
-### Admin → Production
+### TPM → Production
 
 | Field | Required | Location | Description |
 |-------|----------|----------|-------------|
@@ -314,7 +314,7 @@ OR
 @human Ready for final verification.
 ```
 
-### Admin → Production Complete
+### TPM → Production Complete
 
 ```markdown
 ## ✅ Production Deployment Complete
@@ -625,7 +625,7 @@ PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → On
 
 | Labels Present | Owner | Environment |
 |----------------|-------|-------------|
-| In-Production | None (done) | Production |
+| In-Production | None (done) | Production (set by TPM) |
 | Staging-Verified | Admin (promote to prod) | Staging |
 | On-Staging | Tester (staging verification) | Staging |
 | Human-Verified | Admin (deploy) | PR Preview |

@@ -114,7 +114,7 @@ Use this structured framework for requirements elaboration:
 ### 3.1 Create Issue with Required Fields
 
 ```
-Use mcp__plugin_linear_linear__create_issue with:
+Use mcp__linear__create_issue with:
 - team: "Yarda"
 - title: "<action verb> <object> - <brief description>"
 - description: <structured description - see template below>
@@ -259,7 +259,7 @@ After creating the issue:
 3. **Report to user** - Provide issue ID and summary
 
 ```
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: "## 📋 Issue Ready for Development\n\n**Epic:** epic:<name>\n**Size:** <size>\n**CUJs:** <list>\n\n@builder Ready for pickup."
 ```
@@ -355,7 +355,7 @@ For each issue, validate against:
 After validation, add report to Linear:
 
 ```
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: "## 🔍 PM Pre-Human Validation Report\n\n
 **Environment:** PR Preview\n

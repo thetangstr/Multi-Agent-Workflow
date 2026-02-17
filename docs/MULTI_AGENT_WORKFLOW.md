@@ -352,11 +352,11 @@ PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → On
 ### MCP Tools Used
 
 **Linear Integration:**
-- `mcp__plugin_linear_linear__get_issue` - Fetch issue details
-- `mcp__plugin_linear_linear__list_issues` - Query issues by label
-- `mcp__plugin_linear_linear__update_issue` - Update status/labels
-- `mcp__plugin_linear_linear__create_comment` - Add handoff comments
-- `mcp__plugin_linear_linear__create_issue` - Create bug sub-issues
+- `mcp__linear__get_issue` - Fetch issue details
+- `mcp__linear__list_issues` - Query issues by label
+- `mcp__linear__update_issue` - Update status/labels
+- `mcp__linear__create_comment` - Add handoff comments
+- `mcp__linear__create_issue` - Create bug sub-issues
 
 **GitHub Integration:**
 - `mcp__github__create_pull_request` - Create PRs

@@ -48,7 +48,7 @@ The Tester Agent is part of a 3-agent workflow:
 
 Find issues ready for testing, ordered by priority:
 ```
-Use mcp__plugin_linear_linear__list_issues with:
+Use mcp__linear__list_issues with:
 - team: "Yarda"
 - label: "PR-Ready"
 - orderBy: "priority"  # Test high-priority items first
@@ -61,7 +61,7 @@ Use mcp__plugin_linear_linear__list_issues with:
 
 If a specific issue was provided (e.g., `/tester YAR-5`):
 ```
-Use mcp__plugin_linear_linear__get_issue with:
+Use mcp__linear__get_issue with:
 - id: "YAR-5"
 - includeRelations: true
 ```
@@ -70,7 +70,7 @@ Use mcp__plugin_linear_linear__get_issue with:
 
 Add "Testing" label:
 ```
-Use mcp__plugin_linear_linear__update_issue with:
+Use mcp__linear__update_issue with:
 - id: <issue_id>
 - labels: ["Testing", <keep existing except PR-Ready>]
 ```
@@ -79,7 +79,7 @@ Remove "PR-Ready" label.
 
 Add comment:
 ```
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: "## 🧪 Testing Started\n\nRunning automated test suite..."
 ```
@@ -205,7 +205,7 @@ curl https://yardav5-staging-b19c.up.railway.app/health
 
 **Step 1: Get the issue description**
 ```
-Use mcp__plugin_linear_linear__get_issue with:
+Use mcp__linear__get_issue with:
 - id: <issue_id>
 ```
 
@@ -245,16 +245,37 @@ Run the exact command specified in the "Automated Tests" section.
 
 **Fallback (if no test plan):**
 
-If the issue doesn't have a test plan, use size-based defaults:
+If the issue doesn't have a test plan, use the 3-tier system from `docs/TEST_PLAN.md`:
 
-| Size | Default Command |
-|------|-----------------|
-| XS | `npm run test:smoke` |
-| S | `npx playwright test --grep "#<cuj-from-description>"` |
-| M | `npx playwright test --grep "@<epic-label>"` |
-| L/XL | `npm run test:full` |
+| Size | Tier | Default Command |
+|------|------|-----------------|
+| XS | Critical | `npm run test:smoke` |
+| S | Critical | `npm run test:smoke` |
+| M | Epic | `npm run test:epic:<affected-epic>` |
+| L | Epic | `npm run test:epic:<affected-epic>` (all affected epics) |
+| XL | Full | `npm run test:full` |
 
-See `docs/EPIC_REGISTRY.md` for epic/CUJ reference.
+**Available epic commands:**
+```bash
+npm run test:epic:auth
+npm run test:epic:generation
+npm run test:epic:payments
+npm run test:epic:pro-mode
+npm run test:epic:marketplace
+npm run test:epic:account
+npm run test:epic:holiday
+```
+
+**Determine affected epic** from the issue's `epic:` label. If missing, infer from changed files:
+- `auth/`, `login`, `session` → `@auth`
+- `generation/`, `generate`, `gemini` → `@generation`
+- `payments/`, `token`, `subscription`, `stripe` → `@payments`
+- `pro-mode/`, `boundary`, `camera` → `@pro_mode`
+- `marketplace/`, `contractor`, `partner`, `proposal` → `@marketplace`
+- `account/`, `profile`, `settings` → `@account`
+- `holiday/` → `@holiday`
+
+See `docs/TEST_PLAN.md` for the full epic/CUJ registry and manual-only verification checklist.
 
 ### 3.2 Run E2E Test Suite
 
@@ -425,7 +446,7 @@ Look for:
 
 Update Linear:
 ```
-Use mcp__plugin_linear_linear__update_issue with:
+Use mcp__linear__update_issue with:
 - id: <issue_id>
 - labels: ["Tests-Passed", <keep existing except Testing>]
 ```
@@ -437,7 +458,7 @@ Remove "Testing" label.
 You MUST add a detailed verification checklist as a Linear comment so humans know exactly what to test:
 
 ```
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: |
     ## 🧪 Human Verification Checklist
@@ -506,22 +527,22 @@ Use AskUserQuestion with:
 
 **If user approves:**
 ```
-Use mcp__plugin_linear_linear__update_issue with:
+Use mcp__linear__update_issue with:
 - id: <issue_id>
 - labels: ["Human-Verified", <keep existing except Tests-Passed>]
 
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: "## ✅ Human Verified\n\n**Validated By:** Human user\n**Environment:** staging.yarda.ai\n\n@admin Ready to merge to main for production deployment."
 ```
 
 **If user rejects:**
 ```
-Use mcp__plugin_linear_linear__update_issue with:
+Use mcp__linear__update_issue with:
 - id: <issue_id>
 - labels: ["Tests-Failed", <keep existing except Tests-Passed>]
 
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: "## ❌ Human Validation Failed\n\n**Issues Reported:** <user feedback>\n\n@builder Please address the reported issues."
 ```
@@ -541,7 +562,7 @@ Use mcp__github__add_issue_comment with:
 
 For each failure, create a sub-issue:
 ```
-Use mcp__plugin_linear_linear__create_issue with:
+Use mcp__linear__create_issue with:
 - title: "[Bug] <test name> - <failure description>"
 - team: "Yarda"
 - parentId: <parent_issue_id>
@@ -573,7 +594,7 @@ Use mcp__plugin_linear_linear__create_issue with:
 
 Update parent issue:
 ```
-Use mcp__plugin_linear_linear__update_issue with:
+Use mcp__linear__update_issue with:
 - id: <issue_id>
 - labels: ["Tests-Failed", <keep existing except Testing>]
 - state: "In Progress"  # Back to builder
@@ -581,7 +602,7 @@ Use mcp__plugin_linear_linear__update_issue with:
 
 Add failure summary comment:
 ```
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: "## ❌ Tests Failed\n\n**Failures:**\n- ❌ <failure 1> (YAR-XX)\n- ❌ <failure 2> (YAR-YY)\n\n@builder Fixes needed. See linked issues for details."
 ```
@@ -597,6 +618,65 @@ Use mcp__github__pull_request_review_write with:
 - body: "Tests failed. See Linear for details."
 ```
 
+### 4.4 Auto-Spawn Builder to Fix Failures
+
+> **Self-healing loop:** Tester auto-spawns Builder to fix test failures, then Builder auto-spawns Tester to re-verify. Max 2 fix attempts before escalating to human.
+
+**Step 1: Check retry count**
+
+Look at the issue comments for previous `## 🔧 Fixes Applied` comments. Count them.
+
+- **0-1 previous fix attempts** → Auto-spawn Builder (proceed to Step 2)
+- **2+ previous fix attempts** → **STOP.** Escalate to human:
+  ```
+  Use mcp__linear__create_comment with:
+  - issueId: <issue_id>
+  - body: "## 🚨 Auto-Fix Limit Reached\n\nBuilder has attempted 2 fixes but tests still fail. Escalating to human.\n\n**Failures:**\n- <failure list>\n\n@thetangstr Manual investigation needed."
+  ```
+
+**Step 2: Auto-spawn Builder subagent**
+
+```
+Use Task tool with:
+- subagent_type: "general-purpose"
+- description: "Builder fix for YAR-<number>"
+- prompt: |
+    You are the **Builder Agent** fixing test failures for YAR-<issue-number>.
+
+    ## What Failed
+    <paste failure details: test name, expected vs actual, console errors, steps to reproduce>
+
+    ## PR Branch
+    Branch: <branch-name>
+    PR: #<pr-number>
+
+    ## Your Tasks
+    1. Read the failure details above
+    2. Read the relevant source files to understand the bug
+    3. Fix the issue
+    4. Run the affected epic tests locally: `cd frontend && npm run test:epic:<epic>`
+    5. Commit the fix: `git commit -m "fix(YAR-<number>): <description of fix>"`
+    6. Push to the PR branch: `git push`
+    7. Update Linear: remove "Tests-Failed", re-add "PR-Ready"
+    8. Add comment: "## 🔧 Fixes Applied\n\n- <what was fixed>\n\nReady for re-testing."
+
+    ## Important
+    - Do NOT create a new PR. Push to the existing branch.
+    - Do NOT merge anything. Just fix and push.
+    - Run tests locally before pushing to verify the fix works.
+
+    Begin fixing now.
+```
+
+**Step 3: Builder will auto-spawn Tester** after pushing the fix (via Builder Phase 5), completing the loop.
+
+**Flow diagram:**
+```
+Tester → ❌ Fail → Auto-spawn Builder → Fix → Push → Auto-spawn Tester → ✅ Pass
+                                                                        → ❌ Fail (attempt 2) → Auto-spawn Builder → Fix → Push → Auto-spawn Tester
+                                                                                                                                 → ❌ Fail (attempt 3) → 🚨 Escalate to human
+```
+
 ---
 
 ## Phase 5: Staging Deployment Testing
@@ -610,7 +690,7 @@ Admin spawns Tester with staging context after merge.
 
 **Option B: Poll for `On-Staging` label**
 ```
-Use mcp__plugin_linear_linear__list_issues with:
+Use mcp__linear__list_issues with:
 - team: "Yarda"
 - label: "On-Staging"
 - orderBy: "updatedAt"
@@ -627,7 +707,7 @@ Use mcp__plugin_linear_linear__list_issues with:
 
 **Step 1: Get issue details**
 ```
-Use mcp__plugin_linear_linear__get_issue with:
+Use mcp__linear__get_issue with:
 - id: <issue_id>
 ```
 
@@ -683,14 +763,14 @@ npm run test:full:staging
 
 If staging tests pass:
 ```
-Use mcp__plugin_linear_linear__update_issue with:
+Use mcp__linear__update_issue with:
 - id: <issue_id>
 - labels: ["Staging-Verified", <keep existing except On-Staging>]
 ```
 
 Add comment:
 ```
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: "## ✅ Staging E2E Passed\n\n**Full regression suite:** X tests passed\n\n@admin Ready for production promotion."
 ```

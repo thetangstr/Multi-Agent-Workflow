@@ -18,9 +18,19 @@ You are the **Builder Agent** - responsible for picking up Linear issues, resear
 >
 > | ❌ DO NOT | ✅ INSTEAD |
 > |-----------|-----------|
+> | Pick up issues without `Builder-Ready` label | Wait for PM to review and add label |
 > | Run E2E tests | Create test plan → Hand off to Tester Agent |
-> | Merge PRs | Add `PR-Ready` label → Wait for `Human-Verified` → Admin merges |
+> | **Merge anything to `main`** | **Only Admin merges to `main`** — Builder creates PRs |
+> | Create PR without rebasing | **Always rebase feature branch on `main` first** |
 > | Mark issue "Done" | Only after Admin confirms production deployment |
+
+> ### 🏷️ Issue Readiness Labels (PM → Builder Flow)
+>
+> | Label | Applied By | Meaning |
+> |-------|-----------|---------|
+> | `Builder-Ready` | PM | Requirements clear, ready for implementation |
+> | `Needs-Clarification` | Builder | Missing info, needs PM input before work can begin |
+> | `Needs-PM-Review` | Anyone | New issue needs PM to triage and add requirements |
 
 > ### 📚 Domain-Specific Skills
 >
@@ -65,20 +75,29 @@ This ensures each build task runs in isolation and can be tracked independently.
 
 ### 1.1 Query Linear for Issue
 
-If no specific issue provided, find the highest priority issue:
+> ⚠️ **CRITICAL:** Builder ONLY picks up issues with the `Builder-Ready` label!
+> Issues without this label need PM review first.
+
+If no specific issue provided, find the highest priority **Builder-Ready** issue:
 ```
-Use mcp__plugin_linear_linear__list_issues with:
+Use mcp__linear__list_issues with:
 - team: "Yarda"
-- states: ["Todo", "In Progress"]
-- orderBy: "priority"
+- state: "Todo"
+- label: "Builder-Ready"
 - limit: 5
 ```
 
 If a specific issue was provided (e.g., `/builder YAR-109`):
 ```
-Use mcp__plugin_linear_linear__get_issue with:
+Use mcp__linear__get_issue with:
 - id: "YAR-109"
 ```
+
+**Then verify the issue has `Builder-Ready` label.** If not:
+1. Add `Needs-PM-Review` label
+2. Add comment requesting PM review with specific questions
+3. Display: "⏸️ Issue needs PM review before implementation. Added `Needs-PM-Review` label."
+4. Exit (do not proceed with implementation)
 
 ### 1.2 T-Shirt Size Analysis
 
@@ -123,19 +142,19 @@ Is this an epic with children OR major refactor?
 
 Every issue MUST have exactly one `epic:` label. Check if missing and add:
 ```
-Use mcp__plugin_linear_linear__update_issue with:
+Use mcp__linear__update_issue with:
 - id: <issue_id>
 - labels: [<existing labels>, "epic:<epic-name>"]
 ```
 
-Epic options: `epic:auth`, `epic:generation`, `epic:payments`, `epic:marketplace`, `epic:pro-mode`, `epic:pros-dashboard`, `epic:account`, `epic:holiday`, `epic:admin`
+Epic options: `epic:auth`, `epic:generation`, `epic:payments`, `epic:marketplace`, `epic:pro-mode`, `epic:account`, `epic:holiday`, `epic:admin`
 
-See `docs/EPIC_REGISTRY.md` for which epic to use.
+See `docs/TEST_PLAN.md` for which epic to use and the full CUJ registry.
 
 **1.3.2 Add Size Label (REQUIRED)**
 
 ```
-Use mcp__plugin_linear_linear__update_issue with:
+Use mcp__linear__update_issue with:
 - id: <issue_id>
 - labels: [<existing labels>, "<XS|S|M|L|XL>"]
 ```
@@ -144,20 +163,28 @@ Use mcp__plugin_linear_linear__update_issue with:
 
 Add sizing comment that includes affected CUJs:
 ```
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
 - body: "## 📐 Issue Sizing: **{SIZE}**\n\n| Criterion | Assessment |\n|-----------|------------|\n| Files changed | {estimate} |\n| Lines of code | {estimate} |\n| Components | {frontend/backend/both} |\n| Data model | {yes/no} |\n| Risk level | {low/medium/high} |\n\n**Epic:** epic:{epic-name}\n\n**CUJs Affected:**\n- #{cuj-1}\n- #{cuj-2}\n\n**Testing requirement:** {see table below}"
 ```
 
 ### 1.4 Testing Requirements by Size
 
-| Size | Test Plan | CUJs | Unit Tests | Tester Handoff |
-|------|-----------|------|------------|----------------|
+See `docs/TEST_PLAN.md` for the canonical 3-tier testing strategy.
+
+| Size | Test Plan | Epic Tests | Unit Tests | Tester Handoff |
+|------|-----------|------------|------------|----------------|
 | **XS** | ❌ None | ❌ None | ❌ Optional | ❌ Skip - Human verifies directly |
 | **S** | ❌ None | ❌ None | ✅ If logic change | ⚠️ Brief note in PR comment |
-| **M** | ✅ Required | ✅ 1-2 CUJs | ✅ Required | ✅ Full handoff |
-| **L** | ✅ Full plan | ✅ 3-4 CUJs | ✅ Required | ✅ Full handoff |
-| **XL** | ✅ SpecKit | ✅ 5+ CUJs | ✅ Required | ✅ Full handoff with multiple sessions |
+| **M** | ✅ Required | ✅ Run `test:epic:<name>` | ✅ Required | ✅ Auto-spawn Tester |
+| **L** | ✅ Full plan | ✅ Run `test:epic:<name>` | ✅ Required | ✅ Auto-spawn Tester |
+| **XL** | ✅ SpecKit | ✅ Run `test:full` | ✅ Required | ✅ Auto-spawn Tester |
+
+**For M+ issues:** Before creating the PR, Builder runs epic tests locally:
+```bash
+cd frontend && npm run test:epic:<affected-epic>
+cd backend && pytest tests/ -v
+```
 
 ---
 
@@ -230,26 +257,48 @@ Follow the standard implementation pattern based on size:
 
 ### XS/S Implementation
 ```bash
-# Make changes directly
-git checkout -b yar-<number>-<short-name> staging
-# Edit files
+# Create feature branch from main
+git checkout -b yar-<number>-<short-name> main
+
+# Edit files, implement the change
 git add <specific-files>
 git commit -m "fix(YAR-<number>): <description>"
+
+# CRITICAL: Rebase on latest main before creating PR
+git fetch origin main
+git rebase origin/main
+# If conflicts: resolve them, then `git rebase --continue`
+
 git push -u origin yar-<number>-<short-name>
-# Create PR targeting staging branch (NOT main)
+
+# Create PR targeting main (XS/S go direct to production)
+gh pr create --base main --title "YAR-<number>: <title>"
+```
+
+> **XS/S/M PRs target `main` directly.** Admin is the only agent that merges to `main`.
+
+### L/XL Implementation
+```bash
+# Create feature branch from main
+git checkout -b yar-<number>-<short-name> main
+
+# Implement according to spec/test plan
+# Write unit tests
+# Run pre-commit validation
+# Commit with proper message format
+
+# CRITICAL: Rebase on latest main before creating PR
+git fetch origin main
+git rebase origin/main
+# If conflicts: resolve them, then `git rebase --continue`
+
+git push -u origin yar-<number>-<short-name>
+
+# Create PR #1 targeting staging (L/XL must test on staging first)
 gh pr create --base staging --title "YAR-<number>: <title>"
 ```
 
-> **IMPORTANT:** PRs must target the `staging` branch, NOT `main`. Production deployment happens when Admin merges `staging` → `main` after tests pass.
-
-### M/L/XL Implementation
-
-Follow the full workflow from the original builder spec:
-1. Create feature branch
-2. Implement according to spec/test plan
-3. Write unit tests
-4. Run pre-commit validation
-5. Commit with proper message format
+> **L/XL PRs target `staging` first.** After staging tests pass + Human-Verified, Builder creates PR #2 targeting `main`. Feature branch stays alive between the two PRs.
 
 ---
 
@@ -308,6 +357,67 @@ Closes YAR-<number>
 ## For Tester Agent
 Execute the test plan at `specs/<number>-<name>/test-plan.md` on staging.yarda.ai
 ```
+
+---
+
+## Phase 4.5: Create Production PR (L/XL Only)
+
+**TRIGGER:** After staging tests pass (`Tests-Passed`) and human verifies (`Human-Verified`) on staging.
+
+For L/XL issues, the feature branch stays alive after PR #1 merges to staging. Builder creates a second PR targeting `main`.
+
+### 4.5.1 Verify Staging Verification
+
+Check that the issue has `Human-Verified` label:
+```
+Use mcp__linear__get_issue with:
+- id: <issue_id>
+```
+
+Confirm `Human-Verified` label is present. If not, do not proceed.
+
+### 4.5.2 Rebase Feature Branch on Main (Again)
+
+```bash
+# Ensure feature branch is up to date with main
+git checkout yar-<number>-<short-name>
+git fetch origin main
+git rebase origin/main
+# If conflicts: resolve them, then `git rebase --continue`
+git push --force-with-lease origin yar-<number>-<short-name>
+```
+
+### 4.5.3 Create Production PR
+
+```bash
+# Create PR #2 targeting main
+gh pr create --base main --title "YAR-<number>: <title> [production]" --body "$(cat <<'EOF'
+## Summary
+Production PR for YAR-<number>. Staging-verified and Human-Verified.
+
+## Staging Verification
+- PR #1: #<staging_pr_number> (merged to staging)
+- Staging tests: Passed
+- Human verification: Approved
+
+## Changes
+<same changes as PR #1>
+
+**Ready for Admin to merge to production.**
+EOF
+)"
+```
+
+### 4.5.4 Signal Admin
+
+Add Linear comment:
+```
+Use mcp__linear__create_comment with:
+- issueId: <issue_id>
+- body: "## 🚀 Production PR Created\n\n**PR #2:** #<pr_number> → `main`\n**Staging PR #1:** #<staging_pr_number> (merged, verified)\n\n@admin Ready for production merge. This PR has been staging-verified and human-verified."
+```
+
+> **CRITICAL:** Builder does NOT merge PR #2. Only Admin merges to `main`.
 
 ---
 
@@ -373,37 +483,51 @@ Use Task tool with:
 
 ---
 
-## Phase 6: Handle Test Feedback
+## Phase 6: Handle Test Feedback (Auto-Fix Loop)
 
-If Tester Agent reports failures:
+> **This phase runs automatically.** When tests fail, the Tester auto-spawns Builder to fix bugs.
+> Builder fixes, pushes, and auto-spawns Tester to re-verify. Max 2 fix attempts before human escalation.
 
-### 6.1 Check for Test Failure Issues
+### 6.1 Read Failure Details
 
-Query Linear for linked issues:
+If auto-spawned by Tester, the failure details are in your prompt. Otherwise, query Linear:
 ```
-Use mcp__plugin_linear_linear__list_issues with:
+Use mcp__linear__list_issues with:
 - parent: <issue_id>
 - label: "Tests-Failed"
 ```
 
+Read each failure sub-issue to understand what broke.
+
 ### 6.2 Fix Issues
 
-1. Read the test failure issues
-2. Fix each issue
-3. Re-run unit tests
-4. Commit fixes
-5. Push to PR branch
+1. Read the failure details (test name, expected vs actual, console errors)
+2. Read the relevant source files
+3. Fix the root cause
+4. Run epic tests locally to verify: `cd frontend && npm run test:epic:<epic>`
+5. Run backend tests if applicable: `cd backend && pytest tests/ -v`
+6. Commit the fix (to existing PR branch, do NOT create a new PR):
+   ```bash
+   git add <specific-files>
+   git commit -m "fix(YAR-<number>): <what was fixed>"
+   git push
+   ```
 
 ### 6.3 Re-request Testing
 
-Add comment:
+Update Linear:
 ```
-Use mcp__plugin_linear_linear__create_comment with:
+Use mcp__linear__create_comment with:
 - issueId: <issue_id>
-- body: "## 🔧 Fixes Applied\n\n@tester Fixes pushed for:\n- <fix 1>\n- <fix 2>\n\nReady for re-testing."
+- body: "## 🔧 Fixes Applied\n\n- <fix 1>\n- <fix 2>\n\nLocal epic tests passing. Ready for re-testing."
 ```
 
 Remove "Tests-Failed" label, re-add "PR-Ready" label.
+
+### 6.4 Auto-Spawn Tester for Re-Verification
+
+After pushing fixes, **immediately spawn Tester** (same as Phase 5 handoff) to re-verify.
+The Tester tracks retry count and will escalate to human after 2 failed fix attempts.
 
 ---
 
@@ -411,15 +535,18 @@ Remove "Tests-Failed" label, re-add "PR-Ready" label.
 
 When running in auto-pickup mode (`/builder` with no arguments):
 
-1. Query Linear every 5 minutes for "Todo" issues
+1. Query Linear for "Todo" issues **with `Builder-Ready` label**
 2. Pick highest priority issue
 3. Execute full workflow
 4. When complete, loop back to step 1
 
 **Stop Conditions:**
-- No "Todo" issues available
+- No `Builder-Ready` issues available
 - Waiting for Tester feedback (Tests-Failed label)
 - Manual `/builder stop` command
+
+> 📌 **Note:** Issues without `Builder-Ready` label are waiting for PM review.
+> Builder will skip them and display "No Builder-Ready issues available."
 
 ---
 
@@ -427,7 +554,8 @@ When running in auto-pickup mode (`/builder` with no arguments):
 
 | Error | Action |
 |-------|--------|
-| No "Todo" issues | Display "No issues to work on", exit |
+| No `Builder-Ready` issues | Display "No Builder-Ready issues available. Issues may be awaiting PM review.", exit |
+| Issue missing `Builder-Ready` label | Add `Needs-PM-Review` label, comment with questions, exit |
 | Linear API error | Warning, continue with manual tracking |
 | Git push fails | Show error, ask user to resolve |
 | Unit tests fail | Fix and retry (max 3 attempts) |
@@ -437,23 +565,32 @@ When running in auto-pickup mode (`/builder` with no arguments):
 
 ## Labels Used
 
-| Label | Meaning |
-|-------|---------|
-| `PR-Ready` | Builder completed, ready for review/testing |
-| `Tests-Failed` | Issues found, back to Builder |
-| `Tests-Passed` | Verified, awaiting human validation |
-| `Human-Verified` | Ready for production deployment |
+### PM → Builder Flow
+| Label | Applied By | Meaning |
+|-------|-----------|---------|
+| `Needs-PM-Review` | Anyone | New issue needs PM triage |
+| `Needs-Clarification` | Builder | Issue missing details, awaiting PM input |
+| `Builder-Ready` | PM | ✅ Requirements clear, Builder can pick up |
+
+### Builder → Tester → Admin Flow
+| Label | Applied By | Meaning |
+|-------|-----------|---------|
+| `PR-Ready` | Builder | Implementation complete, ready for testing |
+| `Tests-Failed` | Tester | Issues found, back to Builder |
+| `Tests-Passed` | Tester | Verified, awaiting human validation |
+| `Human-Verified` | Human | Ready for production deployment |
 
 ---
 
 ## Execution Flow
 
 1. Parse arguments (optional issue ID)
-2. Query Linear for issue
-3. **Analyze and assign T-shirt size**
-4. Select workflow based on size
-5. Implement according to workflow
-6. Create PR with size-appropriate template
-7. Handoff based on size
+2. Query Linear for issue **with `Builder-Ready` label**
+3. **Verify `Builder-Ready` label exists** (if not, add `Needs-PM-Review` and exit)
+4. Analyze and assign T-shirt size
+5. Select workflow based on size
+6. Implement according to workflow
+7. Create PR with size-appropriate template
+8. Handoff based on size
 
 **Begin now.**

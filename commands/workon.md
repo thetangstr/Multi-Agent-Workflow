@@ -10,8 +10,8 @@ You are the **MAW Orchestrator** - responsible for automatically routing Linear 
 1. Fetches the issue from Linear
 2. Determines size (uses estimate field or has PM set it)
 3. Routes to the correct agent based on current state
-4. **For M or smaller:** Full orchestration **directly to production** (low-risk)
-5. **For L/XL issues:** Full orchestration **through staging** (requires human validation)
+4. **For M or smaller:** Full orchestration **directly to production** (single PR → `main`)
+5. **For L/XL issues:** Full orchestration **through staging** (PR #1 → `staging`, PR #2 → `main`)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -70,7 +70,7 @@ Extract the issue identifier from the command:
 ### 1.2 Fetch Issue from Linear
 
 ```
-Use mcp__plugin_linear_linear__get_issue with:
+Use mcp__linear__get_issue with:
 - id: "YAR-XXX"
 - includeRelations: true
 ```
@@ -81,11 +81,16 @@ Look for the `estimate` field in the Linear issue. Linear uses Fibonacci points 
 
 | Points | Size | Deployment Path |
 |--------|------|-----------------|
-| 1 | XS | ✅ Direct to production |
-| 2 | S | ✅ Direct to production |
-| 3 | M | ✅ Direct to production |
-| 5 | L | 🔶 Staging → Human verify → Production |
-| 8+ | XL | 🔶 Staging → Human verify → Production |
+| 1 | XS | ✅ Direct to production (single PR → `main`) |
+| 2 | S | ✅ Direct to production (single PR → `main`) |
+| 3 | M | ✅ Direct to production (single PR → `main`) |
+| 5 | L | 🔶 Staging → Human verify → Production (PR #1 → staging, PR #2 → main) |
+| 8+ | XL | 🔶 Staging → Human verify → Production (PR #1 → staging, PR #2 → main) |
+
+**Critical Rules:**
+- Builder **rebases feature branch on `main`** before creating any PR
+- **Admin is the ONLY agent that merges to `main`**
+- After production deploy (L/XL): Admin rebases `staging` on `main`
 
 **Also check for T-shirt size labels:** `XS`, `S`, `M`, `L`, `XL`
 
@@ -111,7 +116,7 @@ Use Task tool with:
     4. Add size label
     5. Return the determined size
 
-    Use mcp__plugin_linear_linear__update_issue with:
+    Use mcp__linear__update_issue with:
     - id: "YAR-<number>"
     - estimate: <points>
     - labels: [<existing>, "<SIZE>"]
@@ -129,13 +134,14 @@ After determining size, route based on risk level:
 
 **If M or smaller (1-3 points) → DIRECT TO PRODUCTION:**
 - Low-risk changes can skip staging validation
-- Full orchestration: PM → Builder → Tester → Admin → **Production**
-- No human verification required (tests are sufficient)
+- Builder rebases on `main`, creates single PR → `main`
+- Full orchestration: PM → Builder → Tester (PR Preview) → Human → Admin merges → Tester (prod smoke) → **Production**
 
-**If L or XL (5+ points) → STAGING PATH:**
+**If L or larger (5+ points) → STAGING PATH:**
 - Higher-risk changes require staging validation
-- Full orchestration: PM → Builder → Tester → Admin → **Staging**
-- Human verification required before production promotion
+- Builder rebases on `main`, creates PR #1 → `staging`
+- Full orchestration: PM → Builder → Tester (staging) → Human → Builder (PR #2 → main) → Admin merges → Tester (prod smoke) → **Production**
+- After production: Admin rebases `staging` on `main`
 
 ### 2.2 L/XL Staging Path
 ```
@@ -256,18 +262,19 @@ Use Task tool with:
 - prompt: |
     You are the Builder Agent. Implement YAR-<number>.
 
-    **Check issue size first to determine PR target branch:**
-    - M or smaller (1-3 pts): Create PR targeting `main` (direct to production)
-    - L or XL (5+ pts): Create PR targeting `staging` (requires validation)
+    **Check issue size to determine PR target branch:**
+    - S or smaller (1-2 pts): Create PR targeting `main` (direct to production)
+    - M or larger (3+ pts): Create PR #1 targeting `staging` (requires validation)
 
     Follow the full Builder workflow from .claude/commands/builder.md:
     1. Read the spec and acceptance criteria
     2. Create feature branch: yar-<number>-<short-name>
     3. Implement the feature
     4. Write unit tests
-    5. Create PR targeting appropriate branch (main or staging based on size)
-    6. Add `PR-Ready` label to Linear
-    7. Add comment: "@tester Ready for E2E testing"
+    5. **REBASE on `main`**: `git fetch origin main && git rebase origin/main` (resolve conflicts)
+    6. Create PR targeting appropriate branch (main or staging based on size)
+    7. Add `PR-Ready` label to Linear
+    8. Add comment: "@tester Ready for E2E testing"
 
     When complete, return "BUILDER_COMPLETE" so orchestrator can continue.
 ```
@@ -295,7 +302,7 @@ Use Task tool with:
 
     **CRITICAL - Human Verification Checklist:**
     When tests pass, you MUST add a detailed verification checklist as a Linear comment.
-    Use mcp__plugin_linear_linear__create_comment with a markdown checklist that includes:
+    Use mcp__linear__create_comment with a markdown checklist that includes:
     - Prerequisites (how to start local dev)
     - Numbered tests with step-by-step instructions
     - Expected results for each step in table format
@@ -358,14 +365,15 @@ Use Task tool with:
 - prompt: |
     You are the Admin Agent. Deploy YAR-<number> to production.
 
-    **This is an M or smaller issue - deploy directly to production.**
+    **This is an M or smaller issue - merge directly to production.**
+    **You are the ONLY agent allowed to merge to main.**
 
     Follow the Admin workflow:
-    1. Verify `Tests-Passed` label exists
-    2. Merge PR to main branch (PR targets main for small issues)
-    3. Wait for Railway production deployment
-    4. Run production smoke tests
-    5. Add `In-Production` label
+    1. Verify `Human-Verified` label exists
+    2. Merge PR to `main` branch: `gh pr merge <pr_number> --merge`
+    3. Wait for Railway production deployment (~3 min)
+    4. Trigger Tester for production smoke tests
+    5. After smoke tests pass: Add `In-Production` label
     6. Mark Linear issue as Done
 
     When production deployment complete, return "PRODUCTION_COMPLETE".
@@ -377,28 +385,30 @@ Use Task tool with:
 - subagent_type: "general-purpose"
 - description: "Admin Agent for YAR-XXX"
 - prompt: |
-    You are the Admin Agent. Deploy YAR-<number> to staging.
+    You are the Admin Agent. Deploy YAR-<number> to production.
 
-    **This is an L/XL issue - deploy to staging first.**
+    **This is an L/XL issue that has been staging-verified.**
+    **You are the ONLY agent allowed to merge to main.**
+
+    The Builder has created PR #2 targeting `main` after staging verification.
 
     Follow the Admin workflow:
-    1. Merge PR to staging branch
-    2. Wait for Railway staging deployment
-    3. Add `On-Staging` label
-    4. Report: "Deployed to staging. Human validation required."
+    1. Verify `Human-Verified` label exists
+    2. Find PR #2 targeting `main` for this issue
+    3. Merge PR #2 to `main`: `gh pr merge <pr_number> --merge`
+    4. Wait for Railway production deployment (~3 min)
+    5. Trigger Tester for production smoke tests
+    6. After smoke tests pass: Add `In-Production` label
+    7. Rebase `staging` on `main`:
+       git checkout staging && git fetch origin main && git rebase origin/main && git push --force-with-lease origin staging
+    8. Mark Linear issue as Done
 
-    **Pause for human validation.**
-    After human adds `Human-Verified` label, continue:
-    5. Merge staging → main for production
-    6. Add `In-Production` label
-    7. Mark Linear issue as Done
-
-    When staging deployment complete, return "STAGING_COMPLETE".
+    When production deployment complete, return "PRODUCTION_COMPLETE".
 ```
 
 ### 3.7 Deployment Complete
 
-**For M or smaller - Production Complete:**
+**For M or smaller (XS/S/M) - Production Complete:**
 ```
 ## ✅ MAW Complete - Deployed to Production
 
@@ -490,11 +500,11 @@ while true:
 
 | Points | Label | Files | Complexity | Deployment Path |
 |--------|-------|-------|------------|-----------------|
-| 1 | XS | 1 | Typo/copy | ✅ Direct to production |
-| 2 | S | 1-2 | Single file logic | ✅ Direct to production |
-| 3 | M | 3-5 | Multi-file, new component | ✅ Direct to production |
-| 5 | L | 6-10 | Full stack feature | 🔶 Staging → Human → Production |
-| 8+ | XL | 10+ | Epic/major refactor | 🔶 Staging → Human → Production |
+| 1 | XS | 1 | Typo/copy | ✅ Single PR → `main` |
+| 2 | S | 1-2 | Single file logic | ✅ Single PR → `main` |
+| 3 | M | 3-5 | Multi-file, new component | ✅ Single PR → `main` |
+| 5 | L | 6-10 | Full stack feature | 🔶 PR #1 → staging, PR #2 → `main` |
+| 8+ | XL | 10+ | Epic/major refactor | 🔶 PR #1 → staging, PR #2 → `main` |
 
 ---
 
@@ -503,12 +513,13 @@ while true:
 | State | Label | Next Agent | Notes |
 |-------|-------|------------|-------|
 | No spec | (none) | PM | |
-| Has spec, no PR | (none) | Builder | PR targets main (M-) or staging (L+) |
-| PR created | `PR-Ready` | Tester | |
-| Tests passed (M-) | `Tests-Passed` | Admin → Production | Direct to production |
-| Tests passed (L+) | `Tests-Passed` | Admin → Staging | Requires human validation |
-| On staging | `On-Staging` | Human validation | L/XL only |
-| Human approved | `Human-Verified` | Admin → Production | L/XL only |
+| Has spec, no PR | (none) | Builder | Rebase on main, PR → main (XS/S/M) or staging (L/XL) |
+| PR created | `PR-Ready` | Tester | Tests on PR Preview (XS/S/M) or staging (L/XL) |
+| Tests passed (XS/S/M) | `Tests-Passed` | PM → Human → Admin | Direct to production |
+| Tests passed (L/XL) | `Tests-Passed` | PM → Human → Builder (PR #2) → Admin | Builder creates PR #2 → main |
+| Human approved (XS/S/M) | `Human-Verified` | Admin merges to main | Admin triggers prod smoke test |
+| Human approved (L/XL, no PR #2) | `Human-Verified` | Builder creates PR #2 → main | |
+| Human approved (L/XL, PR #2 exists) | `Human-Verified` | Admin merges PR #2 to main | Admin triggers prod smoke test, rebases staging |
 | In production | `In-Production` | Done | |
 
 ---
@@ -529,10 +540,10 @@ while true:
 2. Fetch issue from Linear
 3. Check/set size (PM if needed)
 4. Determine deployment path based on size:
-   - **M or smaller (1-3 pts):** Direct to production
-   - **L or XL (5+ pts):** Through staging with human validation
+   - **M or smaller (1-3 pts):** Direct to production (single PR → `main`)
+   - **L or XL (5+ pts):** Through staging with human validation (two PRs)
 5. Run orchestration loop: PM → Builder → Tester → Admin
-6. For M or smaller: Deploy directly to production, complete
+6. For M or smaller: Deploy directly to production via single PR → `main`, complete
 7. For L/XL: Deploy to staging, pause for human validation
 8. After human approval: Promote to production
 
