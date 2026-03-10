@@ -6,55 +6,44 @@ You are the **MAW Orchestrator** - responsible for automatically routing Linear 
 
 ## Overview
 
-`/workon YAR-XXX` is the **single entry point** for all feature and bug development. It automatically:
+`/workon {{ISSUE_PREFIX}}-XXX` is the **single entry point** for all feature and bug development. It automatically:
 1. Fetches the issue from Linear
 2. Determines size (uses estimate field or has PM set it)
-3. Routes to the correct agent based on current state
-4. **For M or smaller:** Full orchestration **directly to production** (single PR → `main`)
-5. **For L/XL issues:** Full orchestration **through staging** (PR #1 → `staging`, PR #2 → `main`)
+3. Determines deployment path (default vs staging-required)
+4. Routes to the correct agent based on current state
+5. Chains agents: PM -> Builder -> Deploy + Smoke -> Tester (automated + code review + Chrome CUJ)
+6. Stops at `Locally-Tested` or `Staging-Tested`
+7. For XS/S: auto-adds `Human-Verified` (no human gate)
+8. For M+: posts human checklist, waits for human to add `Human-Verified`
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         /workon YAR-XXX                                      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  1. Fetch Issue & Check Size                                                │
-│         │                                                                   │
-│         ├─── No size? ────────────────▶ PM sets size                        │
-│         │                                    │                              │
-│         ▼                                    ▼                              │
-│  2. Check Size & Route                                                      │
-│         │                                                                   │
-│         ├─── L/XL (5+ pts) ───────────▶ STAGING PATH                        │
-│         │                                    │                              │
-│         │                                    ▼                              │
-│         │                         PM → Builder → Tester                     │
-│         │                                    │                              │
-│         │                                    ▼                              │
-│         │                              ┌─────────────┐                      │
-│         │                              │   STAGING   │                      │
-│         │                              │  (validate) │                      │
-│         │                              └──────┬──────┘                      │
-│         │                                     │                             │
-│         │                              Human-Verified                       │
-│         │                                     │                             │
-│         │                                     ▼                             │
-│         │                              ┌─────────────┐                      │
-│         │                              │ PRODUCTION  │                      │
-│         │                              └─────────────┘                      │
-│         │                                                                   │
-│         └─── M or smaller (1-3 pts) ──▶ DIRECT PATH                         │
-│                                              │                              │
-│                                              ▼                              │
-│                               PM → Builder → Tester → Admin                 │
-│                                              │                              │
-│                                              ▼                              │
-│                                    ┌─────────────────┐                      │
-│                                    │   PRODUCTION    │                      │
-│                                    │    (direct)     │                      │
-│                                    └─────────────────┘                      │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                     /workon {{ISSUE_PREFIX}}-XXX               |
++-------------------------------------------------------------+
+|                                                               |
+|  1. Fetch Issue & Check Size                                  |
+|         |                                                     |
+|         +--- No size? --------> PM sets size                  |
+|         |                            |                        |
+|         v                            v                        |
+|  2. Check Deployment Path                                     |
+|         |                                                     |
+|         +--- staging-required? ---> STAGING PATH              |
+|         |                                                     |
+|         +--- default ------------> DEFAULT PATH               |
+|         |                                                     |
+|         v                                                     |
+|  3. Route: PM -> Builder -> Deploy + Smoke -> Tester          |
+|         |                                                     |
+|         v                                                     |
+|  4. Tester: E2E tests + code review + Chrome CUJ             |
+|         |                                                     |
+|         v                                                     |
+|  XS/S: Locally-Tested -> auto Human-Verified -> TPM ships    |
+|  M+:   Locally-Tested -> human adds Human-Verified -> TPM    |
+|  Stg:  Staging-Tested -> human adds Human-Verified -> TPM    |
+|                                                               |
++-------------------------------------------------------------+
 ```
 
 ---
@@ -64,14 +53,14 @@ You are the **MAW Orchestrator** - responsible for automatically routing Linear 
 ### 1.1 Parse Issue ID
 
 Extract the issue identifier from the command:
-- `/workon YAR-123` → issue ID is `YAR-123`
-- `/workon 123` → assume `YAR-123`
+- `/workon {{ISSUE_PREFIX}}-123` -> issue ID is `{{ISSUE_PREFIX}}-123`
+- `/workon 123` -> assume `{{ISSUE_PREFIX}}-123`
 
 ### 1.2 Fetch Issue from Linear
 
 ```
 Use mcp__linear__get_issue with:
-- id: "YAR-XXX"
+- id: "{{ISSUE_PREFIX}}-XXX"
 - includeRelations: true
 ```
 
@@ -81,16 +70,11 @@ Look for the `estimate` field in the Linear issue. Linear uses Fibonacci points 
 
 | Points | Size | Deployment Path |
 |--------|------|-----------------|
-| 1 | XS | ✅ Direct to production (single PR → `main`) |
-| 2 | S | ✅ Direct to production (single PR → `main`) |
-| 3 | M | ✅ Direct to production (single PR → `main`) |
-| 5 | L | 🔶 Staging → Human verify → Production (PR #1 → staging, PR #2 → main) |
-| 8+ | XL | 🔶 Staging → Human verify → Production (PR #1 → staging, PR #2 → main) |
-
-**Critical Rules:**
-- Builder **rebases feature branch on `main`** before creating any PR
-- **Admin is the ONLY agent that merges to `main`**
-- After production deploy (L/XL): Admin rebases `staging` on `main`
+| 1 | XS | Direct to production (single PR -> `main`), auto-ship |
+| 2 | S | Direct to production (single PR -> `main`), auto-ship |
+| 3 | M | Direct to production (single PR -> `main`), human gate |
+| 5 | L | Direct to production (single PR -> `main`), human gate |
+| 8+ | XL | Direct or staging (check `staging-required` label), human gate |
 
 **Also check for T-shirt size labels:** `XS`, `S`, `M`, `L`, `XL`
 
@@ -101,9 +85,9 @@ If the issue has no estimate AND no size label:
 ```
 Use Task tool with:
 - subagent_type: "general-purpose"
-- description: "PM sizing for YAR-XXX"
+- description: "PM sizing for {{ISSUE_PREFIX}}-XXX"
 - prompt: |
-    You are the PM Agent sizing YAR-<number>.
+    You are the PM Agent sizing {{ISSUE_PREFIX}}-<number>.
 
     1. Read the issue description
     2. Analyze complexity using the sizing criteria:
@@ -115,70 +99,43 @@ Use Task tool with:
        - XS=1, S=2, M=3, L=5, XL=8
     4. Add size label
     5. Return the determined size
-
-    Use mcp__linear__update_issue with:
-    - id: "YAR-<number>"
-    - estimate: <points>
-    - labels: [<existing>, "<SIZE>"]
 ```
 
 Wait for PM to return the size, then continue.
 
 ---
 
-## Phase 2: Size Gate - Determine Deployment Path
+## Phase 2: Determine PR Target Branch
 
-### 2.1 Check Size to Determine Deployment Path
+### 2.1 Check for `staging-required` Label
 
-After determining size, route based on risk level:
-
-**If M or smaller (1-3 points) → DIRECT TO PRODUCTION:**
-- Low-risk changes can skip staging validation
-- Builder rebases on `main`, creates single PR → `main`
-- Full orchestration: PM → Builder → Tester (PR Preview) → Human → Admin merges → Tester (prod smoke) → **Production**
-
-**If L or larger (5+ points) → STAGING PATH:**
-- Higher-risk changes require staging validation
-- Builder rebases on `main`, creates PR #1 → `staging`
-- Full orchestration: PM → Builder → Tester (staging) → Human → Builder (PR #2 → main) → Admin merges → Tester (prod smoke) → **Production**
-- After production: Admin rebases `staging` on `main`
-
-### 2.2 L/XL Staging Path
-```
-## 🔶 Large Issue - Staging Validation Required
-
-YAR-<number> is sized as **<L|XL>** which requires staging validation.
-
-**Deployment Path:**
-PM → Builder → Tester → Admin → Staging → Human-Verified → Production
-
-**Why staging is required for L/XL:**
-- Higher complexity = higher risk
-- Human validation catches integration issues
-- Staging environment mirrors production
-
-**Automated steps:**
-1. PM elaborates requirements
-2. Builder implements
-3. Tester runs E2E tests
-4. Admin deploys to staging
-5. Human validates on staging
-6. Admin promotes to production
+```python
+labels = {label.name for label in issue.labels}
+if "staging-required" in labels:
+    pr_target = "staging"
+    quality_gate = "Staging-Tested"
+else:
+    pr_target = "main"
+    quality_gate = "Locally-Tested"
 ```
 
-### 2.3 M or Smaller Direct Path
+### 2.2 Default Path (no `staging-required`)
+
 ```
-## ✅ Small Issue - Direct to Production
+All sizes go to production via single PR -> main.
+Testing happens on localhost:3000 (frontend) + staging backend.
 
-YAR-<number> is sized as **<XS|S|M>** which can go directly to production.
+XS/S: auto-ship after Locally-Tested (no human gate)
+M+: human verifies external items after Locally-Tested
+```
 
-**Deployment Path:**
-PM → Builder → Tester → Admin → Production (direct)
+### 2.3 Staging-Required Path (XL + `staging-required`)
 
-**Why direct deployment:**
-- Low complexity = low risk
-- Automated tests are sufficient validation
-- Faster iteration for small changes
+```
+PR #1 -> staging. Testing happens on {{STAGING_URL}}.
+After Staging-Tested + Human-Verified:
+  TPM creates PR #2 -> main, merges, prod smoke test.
+  TPM rebases staging on main.
 ```
 
 ---
@@ -198,13 +155,11 @@ def get_current_phase(issue):
     if "In-Production" in labels:
         return "DONE"
     if "Human-Verified" in labels:
-        return "ADMIN"  # Ready for production
-    if "Staging-Verified" in labels:
-        return "AWAIT_HUMAN"  # Waiting for human
-    if "On-Staging" in labels:
-        return "TESTER_STAGING"  # Tester verifying staging
+        return "TPM"  # TPM auto-ships
+    if "Locally-Tested" in labels or "Staging-Tested" in labels:
+        return "AWAIT_HUMAN"  # Waiting for human (M+) or auto-ship (XS/S)
     if "Tests-Passed" in labels:
-        return "AWAIT_HUMAN"  # Waiting for human validation
+        return "TESTER_CHROME"  # Tester continues to Chrome CUJ
     if "Testing" in labels:
         return "TESTER_ACTIVE"  # Tester working
     if "Tests-Failed" in labels:
@@ -230,14 +185,14 @@ def get_current_phase(issue):
 ```
 Use Task tool with:
 - subagent_type: "general-purpose"
-- description: "PM Agent for YAR-XXX"
+- description: "PM Agent for {{ISSUE_PREFIX}}-XXX"
 - prompt: |
-    You are the PM Agent. Elaborate requirements for YAR-<number>.
+    You are the PM Agent. Elaborate requirements for {{ISSUE_PREFIX}}-<number>.
 
     Follow the full PM workflow from .claude/commands/pm.md:
     1. Parse the raw requirements
-    2. Determine epic (epic:auth, epic:generation, etc.)
-    3. Elaborate using PM Requirements Skill
+    2. Determine epic
+    3. Elaborate requirements
     4. Update Linear issue with:
        - Epic label
        - Size label (if not set)
@@ -258,21 +213,19 @@ After PM completes, re-check state and continue to Builder.
 ```
 Use Task tool with:
 - subagent_type: "general-purpose"
-- description: "Builder Agent for YAR-XXX"
+- description: "Builder Agent for {{ISSUE_PREFIX}}-XXX"
 - prompt: |
-    You are the Builder Agent. Implement YAR-<number>.
+    You are the Builder Agent. Implement {{ISSUE_PREFIX}}-<number>.
 
-    **Check issue size to determine PR target branch:**
-    - S or smaller (1-2 pts): Create PR targeting `main` (direct to production)
-    - M or larger (3+ pts): Create PR #1 targeting `staging` (requires validation)
+    **PR target branch:** <main or staging based on deployment path>
 
     Follow the full Builder workflow from .claude/commands/builder.md:
     1. Read the spec and acceptance criteria
-    2. Create feature branch: yar-<number>-<short-name>
+    2. Create feature branch
     3. Implement the feature
-    4. Write unit tests
-    5. **REBASE on `main`**: `git fetch origin main && git rebase origin/main` (resolve conflicts)
-    6. Create PR targeting appropriate branch (main or staging based on size)
+    4. Write unit tests + E2E tests (S+)
+    5. **REBASE on `main`**: `git fetch origin main && git rebase origin/main`
+    6. Create PR targeting appropriate branch
     7. Add `PR-Ready` label to Linear
     8. Add comment: "@tester Ready for E2E testing"
 
@@ -281,178 +234,78 @@ Use Task tool with:
 
 After Builder completes, re-check state and continue to Tester.
 
-### 3.4 Route to Tester
+### 3.4 Deploy & Smoke Test
+
+**Condition:** PR created, before routing to Tester
+
+For **default path** (PR -> main):
+1. Start local dev server: `cd frontend && npm run dev`
+2. Wait for dev server to be ready
+3. Run smoke test against localhost:3000
+
+For **staging-required path** (PR -> staging):
+1. Wait for Railway staging deployment to finish
+2. Health check: `curl -s https://{{BACKEND_STAGING_URL}}/health`
+3. Run smoke test against staging
+
+### 3.5 Route to Tester
 
 **Condition:** Issue has `PR-Ready` label or linked PR without tests
 
 ```
 Use Task tool with:
 - subagent_type: "general-purpose"
-- description: "Tester Agent for YAR-XXX"
+- description: "Tester Agent for {{ISSUE_PREFIX}}-XXX"
 - prompt: |
-    You are the Tester Agent. Test YAR-<number>.
+    You are the Tester Agent. Test {{ISSUE_PREFIX}}-<number>.
 
     Follow the full Tester workflow from .claude/commands/tester.md:
-    1. Start frontend: cd frontend && npm run dev
-    2. Read test plan from Linear issue description
-    3. Execute E2E tests based on epic/CUJ scope
-    4. Use agent-browser MCP for browser automation
-    5. If pass: Add `Tests-Passed` label
+    1. Read test plan from Linear issue description
+    2. Execute E2E tests based on epic/CUJ scope
+    3. Code review: GetWorkspaceDiff + DiffComment
+    4. Chrome CUJ verification: walk each CUJ, record GIFs
+    5. If pass: Add `Locally-Tested` (or `Staging-Tested`) label
     6. If fail: Add `Tests-Failed` label, create sub-issues
 
     **CRITICAL - Human Verification Checklist:**
-    When tests pass, you MUST add a detailed verification checklist as a Linear comment.
-    Use mcp__linear__create_comment with a markdown checklist that includes:
-    - Prerequisites (how to start local dev)
-    - Numbered tests with step-by-step instructions
-    - Expected results for each step in table format
-    - Clear pass/fail actions (which labels to add)
-    - Test count summary
-
-    Example format:
-    ## 🧪 Human Verification Checklist
-    ### Test 1: [Feature]
-    | Step | Expected Result |
-    |------|-----------------|
-    | [Action] | [Result] |
-
-    **If ALL tests pass:** Add `Human-Verified` label
-    **If ANY test fails:** Add `Tests-Failed` label with details
+    When all tests pass, post a checklist containing ONLY
+    agent-impossible items (external systems, subjective quality).
 
     When complete, return "TESTER_COMPLETE" so orchestrator can continue.
 ```
 
-After Tester completes with `Tests-Passed`, the workflow pauses for human validation.
+### 3.6 Handle Test Completion
 
-### 3.5 Await Human Validation
+**If `Locally-Tested` or `Staging-Tested` is set:**
 
-**Condition:** Issue has `Tests-Passed` label
+Check issue size:
+- **XS/S (1-2 pts):** Auto-add `Human-Verified` label. No human gate needed.
+- **M+ (3+ pts):** Post human verification checklist. Stop and wait for human.
 
 ```
-## ⏸️ Awaiting Human Validation
+## Awaiting Human Validation (M+ only)
 
-YAR-<number> has passed all automated tests.
+{{ISSUE_PREFIX}}-<number> has passed all automated and Chrome CUJ tests.
 
 **Current Status:**
-- PM elaboration: ✅ Complete
-- Builder implementation: ✅ Complete
-- Tester E2E tests: ✅ Passed
+- PM elaboration: Complete
+- Builder implementation: Complete
+- Tester E2E tests: Passed
+- Code review: Passed
+- Chrome CUJ verification: Passed
 
 **Next Step:**
-A human must validate the feature and add the `Human-Verified` label.
-
-**To validate:**
-1. Visit localhost:3000 (frontend connected to staging backend)
-2. Test the feature manually
-3. If good: Add `Human-Verified` label in Linear
-4. If issues: Add `Tests-Failed` label with feedback
+A human must verify external-system items and add the `Human-Verified` label.
 
 **After human verification:**
-Run `/workon YAR-<number>` again to continue to Admin deployment.
-```
-
-### 3.6 Route to Admin
-
-**Condition:** Tests passed, ready for deployment
-
-The Admin behavior depends on issue size:
-
-**For M or smaller (direct to production):**
-```
-Use Task tool with:
-- subagent_type: "general-purpose"
-- description: "Admin Agent for YAR-XXX"
-- prompt: |
-    You are the Admin Agent. Deploy YAR-<number> to production.
-
-    **This is an M or smaller issue - merge directly to production.**
-    **You are the ONLY agent allowed to merge to main.**
-
-    Follow the Admin workflow:
-    1. Verify `Human-Verified` label exists
-    2. Merge PR to `main` branch: `gh pr merge <pr_number> --merge`
-    3. Wait for Railway production deployment (~3 min)
-    4. Trigger Tester for production smoke tests
-    5. After smoke tests pass: Add `In-Production` label
-    6. Mark Linear issue as Done
-
-    When production deployment complete, return "PRODUCTION_COMPLETE".
-```
-
-**For L/XL (staging path):**
-```
-Use Task tool with:
-- subagent_type: "general-purpose"
-- description: "Admin Agent for YAR-XXX"
-- prompt: |
-    You are the Admin Agent. Deploy YAR-<number> to production.
-
-    **This is an L/XL issue that has been staging-verified.**
-    **You are the ONLY agent allowed to merge to main.**
-
-    The Builder has created PR #2 targeting `main` after staging verification.
-
-    Follow the Admin workflow:
-    1. Verify `Human-Verified` label exists
-    2. Find PR #2 targeting `main` for this issue
-    3. Merge PR #2 to `main`: `gh pr merge <pr_number> --merge`
-    4. Wait for Railway production deployment (~3 min)
-    5. Trigger Tester for production smoke tests
-    6. After smoke tests pass: Add `In-Production` label
-    7. Rebase `staging` on `main`:
-       git checkout staging && git fetch origin main && git rebase origin/main && git push --force-with-lease origin staging
-    8. Mark Linear issue as Done
-
-    When production deployment complete, return "PRODUCTION_COMPLETE".
-```
-
-### 3.7 Deployment Complete
-
-**For M or smaller (XS/S/M) - Production Complete:**
-```
-## ✅ MAW Complete - Deployed to Production
-
-YAR-<number> has been deployed to production.
-
-**Workflow Summary:**
-- PM elaboration: ✅ Complete
-- Builder implementation: ✅ Complete
-- Tester E2E tests: ✅ Passed
-- Production deployment: ✅ Live
-
-**Production URLs:**
-- Frontend: https://yarda.pro
-- Backend: https://yardav5-production.up.railway.app
-```
-
-**For L/XL - Staging Complete (awaiting human):**
-```
-## ⏸️ Deployed to Staging - Human Validation Required
-
-YAR-<number> has been deployed to staging.
-
-**Workflow Summary:**
-- PM elaboration: ✅ Complete
-- Builder implementation: ✅ Complete
-- Tester E2E tests: ✅ Passed
-- Staging deployment: ✅ Live
-
-**Staging URLs:**
-- Frontend: Vercel Preview (linked in PR)
-- Backend: https://yardav5-staging-b19c.up.railway.app
-
-**Next Step:**
-Human must validate on staging and add `Human-Verified` label.
-
-**After human verification:**
-Run `/workon YAR-<number>` again or `/admin promote YAR-<number>` to deploy to production.
+Run `/tpm sync` to auto-ship to production.
 ```
 
 ---
 
 ## Phase 4: Continuous Orchestration
 
-The orchestrator should chain agents automatically. After each agent completes:
+The orchestrator chains agents automatically. After each agent completes:
 
 1. **Re-fetch issue** to get updated state
 2. **Re-evaluate phase** using the state detection logic
@@ -469,20 +322,28 @@ while true:
         report_complete()
         break
     elif phase == "AWAIT_HUMAN":
-        report_awaiting_human()
-        break  # Pause for human
+        size = get_size(issue)
+        if size in ("XS", "S"):
+            auto_add_human_verified()
+            # TPM will ship on next /tpm sync
+        else:
+            report_awaiting_human()
+            break  # Pause for human
     elif phase == "PM":
         spawn_pm_agent()
         wait_for_completion()
     elif phase == "BUILDER":
         spawn_builder_agent()
         wait_for_completion()
+    elif phase == "DEPLOY":
+        run_deploy_and_smoke()
     elif phase == "TESTER":
         spawn_tester_agent()
         wait_for_completion()
-    elif phase == "ADMIN":
-        spawn_admin_agent()
-        wait_for_completion()
+    elif phase == "TPM":
+        # TPM handles shipping via /tpm sync
+        report_ready_for_tpm()
+        break
 ```
 
 ### 4.2 Error Handling
@@ -491,20 +352,18 @@ while true:
 |-------|--------|
 | Agent fails | Report failure, pause for manual intervention |
 | Linear API error | Retry 3 times, then report failure |
-| Tests fail | Report `Tests-Failed`, pause for Builder fixes |
+| Tests fail | Report `Tests-Failed`, auto-spawn Builder (max 2 retries) |
 | Size unclear | Default to M (safer to have test plan) |
 
 ---
 
-## Size Reference
+## Deployment Path Reference
 
-| Points | Label | Files | Complexity | Deployment Path |
-|--------|-------|-------|------------|-----------------|
-| 1 | XS | 1 | Typo/copy | ✅ Single PR → `main` |
-| 2 | S | 1-2 | Single file logic | ✅ Single PR → `main` |
-| 3 | M | 3-5 | Multi-file, new component | ✅ Single PR → `main` |
-| 5 | L | 6-10 | Full stack feature | 🔶 PR #1 → staging, PR #2 → `main` |
-| 8+ | XL | 10+ | Epic/major refactor | 🔶 PR #1 → staging, PR #2 → `main` |
+| Condition | PR Target | Testing Env | Quality Gate | Human Gate |
+|-----------|-----------|-------------|--------------|------------|
+| XS/S, no `staging-required` | `main` | localhost:3000 | `Locally-Tested` | None (auto-ship) |
+| M/L, no `staging-required` | `main` | localhost:3000 | `Locally-Tested` | Human adds `Human-Verified` |
+| XL + `staging-required` | `staging` | {{STAGING_URL}} | `Staging-Tested` | Human adds `Human-Verified` |
 
 ---
 
@@ -513,24 +372,24 @@ while true:
 | State | Label | Next Agent | Notes |
 |-------|-------|------------|-------|
 | No spec | (none) | PM | |
-| Has spec, no PR | (none) | Builder | Rebase on main, PR → main (XS/S/M) or staging (L/XL) |
-| PR created | `PR-Ready` | Tester | Tests on PR Preview (XS/S/M) or staging (L/XL) |
-| Tests passed (XS/S/M) | `Tests-Passed` | PM → Human → Admin | Direct to production |
-| Tests passed (L/XL) | `Tests-Passed` | PM → Human → Builder (PR #2) → Admin | Builder creates PR #2 → main |
-| Human approved (XS/S/M) | `Human-Verified` | Admin merges to main | Admin triggers prod smoke test |
-| Human approved (L/XL, no PR #2) | `Human-Verified` | Builder creates PR #2 → main | |
-| Human approved (L/XL, PR #2 exists) | `Human-Verified` | Admin merges PR #2 to main | Admin triggers prod smoke test, rebases staging |
+| Has spec, no PR | (none) | Builder | Rebase on main, create PR |
+| PR created | `PR-Ready` | Tester | E2E + code review + Chrome CUJ |
+| Tests passed (XS/S) | `Locally-Tested` | /workon auto-ships | Auto-adds Human-Verified |
+| Tests passed (M+) | `Locally-Tested` | Human | Human adds Human-Verified |
+| Tests passed (staging) | `Staging-Tested` | Human | Human adds Human-Verified |
+| Human approved | `Human-Verified` | TPM | TPM merges + prod smoke via `/tpm sync` |
 | In production | `In-Production` | Done | |
 
 ---
 
 ## Related Documentation
 
-- [MAW SOP](../../docs/maw/sop.md) - Full workflow documentation
+- [MAW SOP](../docs/sop.md) - Full workflow documentation
 - [PM Agent](./pm.md) - Requirements elaboration
 - [Builder Agent](./builder.md) - Implementation
-- [Tester Agent](./tester.md) - E2E testing
-- [Admin Agent](./admin.md) - Deployment
+- [Tester Agent](./tester.md) - E2E testing + Chrome CUJ
+- [TPM Agent](./tpm.md) - Auto-shipping
+- [Admin Agent](./admin.md) - Ops monitoring
 
 ---
 
@@ -539,12 +398,10 @@ while true:
 1. Parse issue ID from command
 2. Fetch issue from Linear
 3. Check/set size (PM if needed)
-4. Determine deployment path based on size:
-   - **M or smaller (1-3 pts):** Direct to production (single PR → `main`)
-   - **L or XL (5+ pts):** Through staging with human validation (two PRs)
-5. Run orchestration loop: PM → Builder → Tester → Admin
-6. For M or smaller: Deploy directly to production via single PR → `main`, complete
-7. For L/XL: Deploy to staging, pause for human validation
-8. After human approval: Promote to production
+4. Determine deployment path (default vs staging-required)
+5. Run orchestration loop: PM -> Builder -> Deploy + Smoke -> Tester
+6. XS/S: Auto-add Human-Verified, report ready for `/tpm sync`
+7. M+: Post human checklist, stop for human verification
+8. After human adds Human-Verified: `/tpm sync` ships to production
 
 **Begin now.**

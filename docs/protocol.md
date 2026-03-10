@@ -1,21 +1,21 @@
 # Agent Communication Protocol
 
-**Version:** 1.0
-**Last Updated:** 2026-02-03
+**Version:** 3.0
+**Last Updated:** 2026-03-10
 
-This document formalizes how MAW agents communicate with each other through Linear issues, PR comments, and labels.
+This document formalizes how MAW agents communicate through Linear issues, PR comments, and labels in a **workspace-scoped** model where each Conductor workspace handles exactly one Linear issue.
 
 ---
 
 ## 1. Handoff Payloads
 
-Each agent transition requires specific data to be passed. Missing required data blocks the receiving agent.
+Each agent transition requires specific data. Missing required data blocks the receiving agent.
 
-### PM → Builder
+### PM -> Builder
 
 | Field | Required | Location | Description |
 |-------|----------|----------|-------------|
-| Epic label | Yes | Linear labels | `epic:<name>` (auth, generation, payments, etc.) |
+| Epic label | Yes | Linear labels | `epic:<name>` |
 | Size label | Yes | Linear labels | `XS`, `S`, `M`, `L`, or `XL` |
 | Estimate | Yes | Linear estimate | Fibonacci points (1, 2, 3, 5, 8) |
 | Summary | Yes | Issue description | What and why |
@@ -23,28 +23,43 @@ Each agent transition requires specific data to be passed. Missing required data
 | CUJ references | M+ | Issue description | `#cuj-name` tags |
 | Test plan | M+ | Issue description | Exact commands to run |
 
-### Builder → Tester
+### Builder -> Tester
 
 | Field | Required | Location | Description |
 |-------|----------|----------|-------------|
 | PR number | Yes | Linear comment | GitHub PR reference |
-| Branch name | Yes | Linear comment | Feature branch name |
+| PR target | Yes | Linear comment | `main` (default) or `staging` (staging-required) |
+| Branch name | Yes | Linear comment | Feature branch name (rebased on `main`) |
+| Rebase confirmation | Yes | Linear comment | Confirm feature branch is rebased on latest `main` |
 | Spec path | M+ | Linear comment | `specs/<num>-<name>/spec.md` |
 | Test plan path | M+ | Linear comment | `specs/<num>-<name>/test-plan.md` |
 | Test scope | Yes | PR body | Commands or CUJ list |
+| E2E test file | S+ | Linear comment | Path to E2E test file |
 | `PR-Ready` label | Yes | Linear labels | Signals handoff complete |
 
-### Tester → Admin
+### Tester -> Human (Locally-Tested or Staging-Tested)
+
+After automated E2E tests AND Chrome-based CUJ verification both pass:
 
 | Field | Required | Location | Description |
 |-------|----------|----------|-------------|
-| Test results | Yes | Linear comment | Pass/fail with counts |
-| Screenshots | Yes | Linear comment | Visual evidence |
-| Verification checklist | Yes | Linear comment | Human test steps |
-| `Tests-Passed` label | Yes | Linear labels | Signals tests complete |
-| Console errors | If any | Linear comment | Any JS/API errors |
+| Automated test results | Yes | Linear comment | Pass/fail with counts |
+| Chrome CUJ results | Yes | Linear comment | Per-CUJ pass/fail with GIF links |
+| GIF recordings | Yes | Linear comment | Visual evidence of CUJ walkthroughs |
+| Console/network health | Yes | Linear comment | No errors confirmed |
+| Human verification checklist | Yes | Linear comment | ONLY agent-impossible items |
+| Code review results | S+ | Linear comment | Summary of findings + inline DiffComments |
+| Quality gate label | Yes | Linear labels | `Locally-Tested` (default) or `Staging-Tested` (staging-required) |
+| Test URL | Yes | Linear comment | localhost:3000 or {{STAGING_URL}} |
 
-### Tester → Builder (Failure)
+**Human verification checklist includes ONLY items agents cannot verify:**
+- Third-party dashboard transactions
+- Email delivery
+- Webhook processing
+- AI-generated content quality
+- OAuth popup flows
+
+### Tester -> Builder (Failure)
 
 | Field | Required | Location | Description |
 |-------|----------|----------|-------------|
@@ -54,39 +69,19 @@ Each agent transition requires specific data to be passed. Missing required data
 | Steps to reproduce | Yes | Sub-issues | How to trigger |
 | `Tests-Failed` label | Yes | Linear labels | Signals failure |
 
-### Tester → PM (Pre-Human Validation)
+### TPM -> Production
+
+After human adds `Human-Verified` label and `/tpm sync` runs:
 
 | Field | Required | Location | Description |
 |-------|----------|----------|-------------|
-| PR Preview URL | Yes | Linear comment | Vercel preview URL for validation |
-| Backend URL | Yes | Linear comment | Staging backend URL |
-| `Tests-Passed` label | Yes | Linear labels | Signals tests passed on PR Preview |
-| Test results summary | Yes | Linear comment | What tests passed |
-| Acceptance criteria | Yes | Issue description | Original requirements to validate |
-
-**Environment:** PR Preview (Vercel preview + staging backend)
-
-### PM → Human (After Validation)
-
-| Field | Required | Location | Description |
-|-------|----------|----------|-------------|
-| Validation report | Yes | Linear comment | Pass/fail with evidence |
-| PR Preview URL | Yes | Linear comment | Where human should verify |
-| Screenshots/GIFs | Yes | Linear comment | Visual proof |
-| UX observations | Recommended | Linear comment | Any friction points |
-| `PM-Validated` label | Yes | Linear labels | Signals PM approval |
-| Recommendation | Yes | Linear comment | APPROVED or REQUIRES FIXES |
-
-**Environment:** PR Preview (same as PM validation)
-
-### TPM → Production
-
-| Field | Required | Location | Description |
-|-------|----------|----------|-------------|
+| PR merged to `main` | Yes | Linear comment | PR number merged |
+| PR #2 created (staging-required) | If applicable | Linear comment | PR targeting `main` from feature branch |
 | Deployment URLs | Yes | Linear comment | Frontend + Backend |
 | Health check results | Yes | Linear comment | Pass/fail |
-| Smoke test results | Yes | Linear comment | Critical path tests |
+| Prod smoke test results | Yes | Linear comment | Pass/fail |
 | Rollback command | Yes | Linear comment | How to revert |
+| Staging rebase status | staging-required | Linear comment | Confirm staging rebased on main |
 | `In-Production` label | Yes | Linear labels | Signals live |
 
 ---
@@ -96,7 +91,7 @@ Each agent transition requires specific data to be passed. Missing required data
 ### Required Structure
 
 ```markdown
-# YAR-XXX: <Imperative verb> <object>
+# {{ISSUE_PREFIX}}-XXX: <Imperative verb> <object>
 
 ## Summary
 <1-2 sentences: What this does and why>
@@ -133,13 +128,19 @@ Each agent transition requires specific data to be passed. Missing required data
 | `<XS\|S\|M\|L\|XL>` | Always | PM or Builder |
 | `PR-Ready` | After PR created | Builder |
 | `Testing` | During test run | Tester |
-| `Tests-Passed` | All tests pass | Tester |
+| `Tests-Passed` | Automated E2E tests pass | Tester |
 | `Tests-Failed` | Any test fails | Tester |
-| `On-Staging` | After staging deploy | Admin |
-| `Staging-Verified` | Staging tests pass | Tester |
-| `PM-Validated` | PM validates as user | PM |
-| `Human-Verified` | Human approves | Human |
-| `In-Production` | Live in prod | Admin |
+| `Locally-Tested` | Automated + Chrome CUJ verification pass (default) | Tester |
+| `Staging-Tested` | Automated + Chrome CUJ verification pass (staging-required) | Tester |
+| `Human-Verified` | Human approves external items | Human |
+| `Prod-Smoke-Passed` | Production smoke tests pass | TPM |
+| `In-Production` | Live in prod | TPM |
+
+**Optional labels:**
+| Label | When Used | Set By |
+|-------|-----------|--------|
+| `PM-Validated` | PM validates as user (optional enrichment) | PM |
+| `staging-required` | XL issues needing staging | PM |
 
 ### Required Estimate
 
@@ -155,14 +156,14 @@ Each agent transition requires specific data to be passed. Missing required data
 
 ## 3. Handoff Comment Templates
 
-### Builder → Tester Handoff
+### Builder -> Tester Handoff
 
 ```markdown
-## 🔄 Handoff: Builder → Tester
+## Handoff: Builder -> Tester
 
-**Issue:** YAR-<number>
+**Issue:** {{ISSUE_PREFIX}}-<number>
 **PR:** #<pr_number>
-**Branch:** `yar-<number>-<short-name>`
+**Branch:** `{{ISSUE_PREFIX | lowercase}}-<number>-<short-name>`
 
 ### Issue Context
 - **Size:** <XS|S|M|L|XL>
@@ -183,65 +184,63 @@ Each agent transition requires specific data to be passed. Missing required data
 2. <key behavior 2>
 3. <key behavior 3>
 
-@tester Ready for E2E testing.
+### E2E Tests
+- New: `frontend/tests/e2e/<epic>/<feature>.spec.ts`
+- Updated: `frontend/tests/e2e/<epic>/<existing>.spec.ts`
+
+@tester Ready for E2E testing + Chrome CUJ verification.
 ```
 
-### Tester → Admin Handoff (Pass)
+### Tester -> Human Handoff (Locally-Tested or Staging-Tested)
 
 ```markdown
-## ✅ Tests Passed
+## Tested: Ready for Human Verification
 
-**Issue:** YAR-<number>
+**Issue:** {{ISSUE_PREFIX}}-<number>
 **PR:** #<pr_number>
 
-### Test Results
+### Automated Test Results
 - **Total:** X tests
 - **Passed:** X
 - **Failed:** 0
 - **Skipped:** 0
 
-### Coverage
-- [x] #<cuj-1>: <description>
-- [x] #<cuj-2>: <description>
+### Chrome CUJ Verification
+| CUJ | Status | GIF |
+|-----|--------|-----|
+| #<cuj-1>: <description> | PASS | [recording](<gif-url>) |
+| #<cuj-2>: <description> | PASS | [recording](<gif-url>) |
 
-### Screenshots
-<attach key screenshots>
-
-### Console Errors
-None
-
----
-
-## 🧪 Human Verification Checklist
-
-**Staging URL:** https://staging.yarda.ai?x-vercel-protection-bypass=<token>&x-vercel-set-bypass-cookie=true
-
-### Test 1: <Feature Name>
-| Step | Expected Result |
-|------|-----------------|
-| Navigate to <url> | Page loads |
-| Click <element> | <action occurs> |
-| Verify <state> | <expected state> |
-
-### Test 2: <Feature Name>
-| Step | Expected Result |
-|------|-----------------|
-| <action> | <result> |
+### Browser Health
+- **Console errors:** None
+- **Failed network requests:** None
+- **Responsive check:** Passed (desktop + mobile)
 
 ---
 
-**If ALL tests pass:** Add `Human-Verified` label
-**If ANY test fails:** Add `Tests-Failed` label with details
+## Human Verification Checklist (Agent-Impossible Items)
 
-@human Ready for validation.
+**Test URL:** <localhost:3000 or {{STAGING_URL}}>
+
+These items require human verification because agents cannot access external systems:
+
+- [ ] <Third-party dashboard transaction visible> (if applicable)
+- [ ] <Email received> (if applicable)
+- [ ] <Webhook processed> (if applicable)
+- [ ] <AI content quality acceptable> (if applicable)
+
+---
+
+**If ALL items pass:** Add `Human-Verified` label, then run `/tpm sync`
+**If ANY item fails:** Add `Tests-Failed` label with details
 ```
 
-### Tester → Builder Handoff (Failure)
+### Tester -> Builder Handoff (Failure)
 
 ```markdown
-## ❌ Tests Failed
+## Tests Failed
 
-**Issue:** YAR-<number>
+**Issue:** {{ISSUE_PREFIX}}-<number>
 **PR:** #<pr_number>
 
 ### Summary
@@ -256,14 +255,14 @@ None
 - **Expected:** <expected behavior>
 - **Actual:** <actual behavior>
 - **Screenshot:** <link>
-- **Sub-issue:** YAR-<number>-1
+- **Sub-issue:** {{ISSUE_PREFIX}}-<number>-1
 
 #### 2. <Test Name>
 - **CUJ:** #<cuj-name>
 - **Expected:** <expected behavior>
 - **Actual:** <actual behavior>
 - **Screenshot:** <link>
-- **Sub-issue:** YAR-<number>-2
+- **Sub-issue:** {{ISSUE_PREFIX}}-<number>-2
 
 ### Console Errors
 ```
@@ -273,58 +272,17 @@ None
 @builder Fixes needed. See sub-issues for details.
 ```
 
-### PM Validation Report
+### TPM -> Production Complete
 
 ```markdown
-## 🔍 PM Pre-Human Validation Report
+## Shipped to Production
 
-**Issue:** YAR-<number>
-**Environment:** <staging|production>
-**Validated:** <timestamp>
-
-### Acceptance Criteria
-- [x] <criterion 1> ✅
-- [x] <criterion 2> ✅
-- [ ] <criterion 3> ❌ Issue: <description>
-
-### CUJ Walkthroughs
-| CUJ | Status | Notes |
-|-----|--------|-------|
-| #<cuj-1> | ✅ Pass | <notes> |
-| #<cuj-2> | ✅ Pass | <notes> |
-
-### UX Observations
-- <any friction points>
-- <suggestions for improvement>
-
-### Screenshots/GIFs
-<attach visual evidence of user journey>
-
-### Console Errors
-None (or list any issues)
-
----
-
-### Recommendation
-
-**✅ APPROVED for Human Sign-off**
-OR
-**❌ REQUIRES FIXES** - See sub-issues
-
-@human Ready for final verification.
-```
-
-### TPM → Production Complete
-
-```markdown
-## ✅ Production Deployment Complete
-
-**Issue:** YAR-<number>
+**Issue:** {{ISSUE_PREFIX}}-<number>
 **Deployed:** <timestamp>
 
 ### URLs
-- **Frontend:** https://yarda.pro
-- **Backend:** https://yardav5-production.up.railway.app
+- **Frontend:** https://{{PRODUCTION_URL}}
+- **Backend:** https://{{BACKEND_PROD_URL}}
 
 ### Verification
 - [x] Health check passed
@@ -343,18 +301,15 @@ Feature is now live in production.
 
 ## 4. State Detection Logic
 
-Agents use this logic to determine which agent owns an issue:
+Agents use this logic to determine which agent owns an issue. All agents are **workspace-scoped** -- they only track the single issue their workspace is working on.
 
 ```python
 def get_owner(issue) -> str | None:
     """
     Determine which agent should act on this issue.
-    Returns: 'pm', 'builder', 'tester', 'admin', or None (human/done)
+    Returns: 'pm', 'builder', 'tester', 'tpm', or None (human/done)
 
-    Environment context:
-    - PR-Ready through PM-Validated: PR Preview environment
-    - On-Staging through Staging-Verified: Staging environment
-    - In-Production: Production environment
+    Workspace-scoped: each workspace tracks exactly one issue.
     """
     labels = {label.name for label in issue.labels}
 
@@ -362,29 +317,19 @@ def get_owner(issue) -> str | None:
     if "In-Production" in labels:
         return None
 
-    # L/XL: After staging verification, Admin promotes to production
-    if "Staging-Verified" in labels:
-        return "admin"
-
-    # L/XL: Tester verifies staging deployment
-    if "On-Staging" in labels:
-        return "tester"
-
-    # Admin deploys after Human-Verified
-    # - XS/S/M: directly to production
-    # - L/XL: to staging first
+    # TPM auto-ships after human verification
     if "Human-Verified" in labels:
-        return "admin"
+        return "tpm"
 
-    # Human owns - awaiting final validation on PR Preview
-    if "PM-Validated" in labels:
+    # Human owns - awaiting external-system verification
+    if "Locally-Tested" in labels or "Staging-Tested" in labels:
         return None  # Human must add Human-Verified
 
-    # PM owns - needs pre-human validation on PR Preview
+    # Tester owns - automated tests passed, Chrome CUJ next
     if "Tests-Passed" in labels:
-        return "pm"  # PM validates on PR Preview
+        return "tester"  # Tester continues to Chrome CUJ
 
-    # Tester owns - PR testing on PR Preview
+    # Tester owns - PR testing
     if "PR-Ready" in labels:
         return "tester"
     if "Testing" in labels:
@@ -429,7 +374,6 @@ def has_acceptance_criteria(issue) -> bool:
 
 
 def has_linked_pr(issue) -> bool:
-    # Check for PR link in description or attachments
     return "github.com" in (issue.description or "") and "/pull/" in (issue.description or "")
 ```
 
@@ -440,9 +384,9 @@ def has_linked_pr(issue) -> bool:
 ### Error Comment Template
 
 ```markdown
-## ❌ Agent Error: <Agent Name>
+## Agent Error: <Agent Name>
 
-**Issue:** YAR-<number>
+**Issue:** {{ISSUE_PREFIX}}-<number>
 **Phase:** <current phase>
 **Timestamp:** <ISO timestamp>
 
@@ -470,7 +414,7 @@ def has_linked_pr(issue) -> bool:
 | Error Type | Set By | Recovery |
 |------------|--------|----------|
 | Test Failure | Tester | Builder fixes, re-adds PR-Ready |
-| Deployment Failure | Admin | Check logs, retry or rollback |
+| Deployment Failure | TPM | Check logs, retry or rollback |
 | API Error | Any | Retry or escalate to human |
 | Timeout | Any | Retry with longer timeout |
 | Linear API Error | Any | Retry 3x, then manual tracking |
@@ -484,7 +428,7 @@ def has_linked_pr(issue) -> bool:
 
 Each agent MUST validate before handing off:
 
-**PM → Builder:**
+**PM -> Builder:**
 - [ ] Epic label exists
 - [ ] Size label or estimate exists
 - [ ] Summary section exists
@@ -492,130 +436,130 @@ Each agent MUST validate before handing off:
 - [ ] CUJs listed (for M+)
 - [ ] Test plan included (for M+)
 
-**Builder → Tester:**
+**Builder -> Tester:**
 - [ ] PR created and linked
 - [ ] Branch pushed to origin
 - [ ] Unit tests pass locally
 - [ ] Spec committed (for M+)
 - [ ] Test plan committed (for M+)
 - [ ] Handoff comment posted
+- [ ] E2E test file created/updated (S+ with user-facing behavior)
+- [ ] E2E test passes locally
 - [ ] `PR-Ready` label added
 
-**Tester → PM (Pre-Human Validation):**
-- [ ] Staging tests passed
-- [ ] `Staging-Verified` label added
-- [ ] Test results posted
+**Tester -> Human (Locally-Tested or Staging-Tested):**
+- [ ] Automated E2E tests passed
+- [ ] Chrome CUJ verification passed (all CUJs walked)
+- [ ] GIF recordings captured
+- [ ] Console/network health confirmed
+- [ ] Human verification checklist posted (agent-impossible items only)
+- [ ] Code review completed (S+)
+- [ ] Inline comments left via DiffComment (if findings)
+- [ ] E2E test existence verified for S+ features
+- [ ] `Locally-Tested` or `Staging-Tested` label added
 
-**PM → Human:**
-- [ ] Feature validated as real user
-- [ ] All acceptance criteria checked
-- [ ] CUJ walkthroughs completed
-- [ ] Screenshots/GIFs captured
-- [ ] Validation report posted
-- [ ] `PM-Validated` label added
-
-**Admin → Production:**
+**TPM -> Production (after Human-Verified):**
 - [ ] `Human-Verified` label present
+- [ ] PR merged to `main` (TPM is the ONLY agent that merges to main)
 - [ ] Health checks pass
 - [ ] Smoke tests pass
 - [ ] Rollback command documented
 - [ ] `In-Production` label added
 - [ ] Issue marked Done
+- [ ] Staging rebased on main (staging-required only)
 
 ---
 
 ## 7. Label State Machine
 
-### XS/S/M Flow (Direct to Production)
+### Default Flow (all sizes, no `staging-required`)
 ```
-PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → In-Production
-[PR Prev]  [PR Prev]  [PR Preview]   [PR Preview]   [PR Preview]    [Production]
-              ↓
-         Tests-Failed (back to Builder)
+PR-Ready -> Testing -> Tests-Passed -> Locally-Tested -> Human-Verified -> TPM merges -> In-Production
+[preview]  [preview]  [preview]      [preview]        [preview]        [main]        [production]
+              |
+         Tests-Failed (back to Builder, rebase on main, re-push)
 ```
 
-### L/XL Flow (Via Staging)
+### Staging-Required Flow (XL + `staging-required`)
 ```
-PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → On-Staging → Staging-Verified → In-Production
-[PR Prev]  [PR Prev]  [PR Preview]   [PR Preview]   [PR Preview]    [Staging]    [Staging]          [Production]
-              ↓                                                          ↓
-         Tests-Failed                                              Tests-Failed
+PR #1->staging  Testing  Tests-Passed  Staging-Tested  Human-Verified  TPM: PR #2->main  TPM merges  Prod Smoke  In-Production
+ [staging]   [staging]   [staging]     [staging]        [staging]         [main]          [main]      [prod]       [production]
+                |                                                                                                      |
+           Tests-Failed                                                                                    TPM rebases staging
+           (back to Builder)                                                                                on main
 ```
 
 ### Complete State Diagram
 
 ```
-                    ┌────────────────────────────────────────────────────┐
-                    │                                                    │
-                    ▼                                                    │
-┌──────────┐   ┌──────────┐   ┌─────────────┐   ┌──────────────┐        │
-│ PR-Ready │──▶│ Testing  │──▶│Tests-Passed │──▶│ PM-Validated │        │
-│          │   │          │   │             │   │              │        │
-│[PR Prev] │   │[PR Prev] │   │[PR Preview] │   │[PR Preview]  │        │
-└──────────┘   └──────────┘   └─────────────┘   └──────────────┘        │
-     ▲              │                                  │                │
-     │              ▼                                  ▼                │
-     │         ┌─────────────┐              ┌──────────────────┐        │
-     │         │Tests-Failed │              │ Human-Verified   │        │
-     │         └─────────────┘              │                  │        │
-     │              │                       │ [PR Preview]     │        │
-     └──────────────┘                       └──────────────────┘        │
-           (back to Builder)                          │                 │
-                                        ┌─────────────┴─────────────┐   │
-                                        │                           │   │
-                               (XS/S/M) ▼                  (L/XL)   ▼   │
-                              ┌──────────────┐         ┌──────────────┐ │
-                              │In-Production │         │ On-Staging   │ │
-                              │              │         │              │ │
-                              │[production]  │         │ [staging]    │ │
-                              └──────────────┘         └──────────────┘ │
-                                                              │         │
-                                                              ▼         │
-                                                    ┌─────────────────┐ │
-                                                    │Staging-Verified │ │
-                                                    │                 │ │
-                                                    │ [staging]       │ │
-                                                    └─────────────────┘ │
-                                                              │         │
-                                                              ▼         │
-                                                    ┌──────────────┐    │
-                                                    │In-Production │    │
-                                                    │              │    │
-                                                    │[production]  │    │
-                                                    └──────────────┘    │
-                                                              │         │
-                                                              └─────────┘
-                                                        (Tests-Failed possible)
+                    +--------------------------------------------+
+                    |                                            |
+                    v                                            |
++----------+   +----------+   +-------------+                  |
+| PR-Ready |-->| Testing  |-->|Tests-Passed |                  |
++----------+   +----------+   +-------------+                  |
+     ^              |                |                          |
+     |              v                v                          |
+     |         +-------------+  +----------------+             |
+     |         |Tests-Failed |  |Locally-Tested  |             |
+     |         +-------------+  |or Staging-Tested|            |
+     |              |           +----------------+             |
+     +--------------+                |                         |
+           (Builder fixes)           v                         |
+                              +------------------+             |
+                              | Human-Verified   |             |
+                              | (human adds)     |             |
+                              +------------------+             |
+                                       |                       |
+                          +------------+------------+          |
+                          |                         |          |
+                (default) v            (staging-req) v          |
+                 +--------------+         +--------------+     |
+                 |TPM merges PR |         |TPM: PR #2    |     |
+                 |to main       |         |-> main, merge|     |
+                 +--------------+         +--------------+     |
+                          |                         |          |
+                          v                         v          |
+                 +--------------+         +--------------+     |
+                 |In-Production |         |In-Production |     |
+                 |              |         |+ rebase stg  |     |
+                 +--------------+         +--------------+     |
+                                                    |          |
+                                                    +----------+
+                                              (Tests-Failed possible
+                                               on prod smoke -> revert)
 ```
 
 ### Valid Transitions
 
-| From | To | Triggered By | Environment |
-|------|----|--------------|-------------|
-| (none) | PR-Ready | Builder creates PR | PR Preview created |
-| PR-Ready | Testing | Tester starts | PR Preview |
-| Testing | Tests-Passed | All tests pass | PR Preview |
-| Testing | Tests-Failed | Any test fails | PR Preview |
-| Tests-Failed | PR-Ready | Builder fixes | localhost → PR Preview |
-| Tests-Passed | PM-Validated | PM validates | PR Preview |
-| PM-Validated | Human-Verified | Human approves | PR Preview |
-| Human-Verified | In-Production | Admin deploys (XS/S/M) | Production |
-| Human-Verified | On-Staging | Admin deploys (L/XL) | Staging |
-| On-Staging | Staging-Verified | Tester verifies | Staging |
-| On-Staging | Tests-Failed | Staging tests fail | Staging |
-| Staging-Verified | In-Production | Admin promotes | Production |
+> **Note:** Code review (Phase 3.5) is internal to the Tester's workflow between automated E2E tests and Chrome CUJ verification. It does not create a new label state. If code review finds CRITICAL/HIGH issues, the Tester sets `Tests-Failed` and the normal fix loop applies.
+
+| From | To | Triggered By |
+|------|----|--------------|
+| (none) | PR-Ready | Builder creates PR (rebased on main) |
+| PR-Ready | Testing | Tester starts automated tests |
+| Testing | Tests-Passed | All automated E2E tests pass |
+| Testing | Tests-Failed | Any test fails |
+| Tests-Failed | PR-Ready | Builder fixes + rebases on main |
+| Tests-Passed | Locally-Tested | Chrome CUJ verification passes (default path) |
+| Tests-Passed | Staging-Tested | Chrome CUJ verification passes (staging-required path) |
+| Locally-Tested | Human-Verified | Human approves external-system items |
+| Staging-Tested | Human-Verified | Human approves external-system items |
+| Human-Verified | In-Production | TPM merges PR to main + prod smoke passes (default) |
+| Human-Verified | (TPM creates PR #2) | TPM creates PR -> main (staging-required) |
+| (PR #2 created) | In-Production | TPM merges PR #2 to main + prod smoke passes |
 
 ### Invalid Transitions (Blocked)
 
 | From | To | Reason |
 |------|----|--------|
-| PR-Ready | In-Production | Must pass testing, PM validation, human verification |
+| PR-Ready | In-Production | Must pass testing, Chrome CUJ, human verification |
 | Tests-Failed | In-Production | Must fix and retest |
-| Tests-Passed | On-Staging | Must have PM-Validated and Human-Verified first |
-| Tests-Passed | In-Production | Must have PM-Validated and Human-Verified first |
-| On-Staging | In-Production | L/XL must have Staging-Verified |
+| Tests-Passed | In-Production | Must have Locally-Tested/Staging-Tested and Human-Verified first |
+| Tests-Passed | Human-Verified | Must have Locally-Tested/Staging-Tested (Chrome CUJ) first |
+| (any) | Merge to main | Only TPM agent can merge to main |
 | (any) | Human-Verified | Only humans can set |
-| (any) | PM-Validated | Only PM agent can set |
+| (any) | Locally-Tested/Staging-Tested | Only Tester can set (after both phases pass) |
 
 ---
 
@@ -623,27 +567,37 @@ PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → On
 
 ### Agent Ownership by Label
 
-| Labels Present | Owner | Environment |
-|----------------|-------|-------------|
-| In-Production | None (done) | Production (set by TPM) |
-| Staging-Verified | Admin (promote to prod) | Staging |
-| On-Staging | Tester (staging verification) | Staging |
-| Human-Verified | Admin (deploy) | PR Preview |
-| PM-Validated | Human (final approval) | PR Preview |
-| Tests-Passed | PM (pre-human validation) | PR Preview |
-| PR-Ready, Testing | Tester | PR Preview |
-| Tests-Failed | Builder | localhost |
-| (has spec, no PR) | Builder | localhost |
-| (missing epic/size) | PM | - |
+| Labels Present | Owner | Action |
+|----------------|-------|--------|
+| In-Production | None (done) | Issue complete |
+| Human-Verified | TPM | Auto-ship: merge to main, prod smoke test |
+| Locally-Tested or Staging-Tested | Human | Verify external-system items, add Human-Verified |
+| Tests-Passed | Tester | Continue to Chrome CUJ verification |
+| PR-Ready, Testing | Tester | Run automated E2E tests |
+| Tests-Failed | Builder | Fix failures, rebase on main, re-push |
+| (has spec, no PR) | Builder | Implement and create PR |
+| (missing epic/size) | PM | Elaborate requirements |
+
+### Two-Phase Orchestration
+
+| Phase | Command | Owner | Scope |
+|-------|---------|-------|-------|
+| Intake -> Tested | `/workon {{ISSUE_PREFIX}}-XXX` | Orchestrator (workspace-scoped) | PM -> Builder -> Deploy + Smoke -> Tester (auto + chrome) |
+| Human-Verified -> Production | `/tpm sync` | TPM (global) | Scan ALL Human-Verified -> Merge -> Prod smoke -> In-Production |
+
+### Deployment Path Routing
+
+| Condition | PR Target | Testing Environment | Quality Gate |
+|-----------|-----------|---------------------|--------------|
+| All sizes, no `staging-required` | `main` | localhost:3000 | `Locally-Tested` |
+| XL + `staging-required` | `staging` | {{STAGING_URL}} | `Staging-Tested` |
 
 ### Required Comment Tags
 
 | Tag | Purpose |
 |-----|---------|
-| `@pm` | Notify PM agent (for validation) |
 | `@builder` | Notify Builder agent |
 | `@tester` | Notify Tester agent |
-| `@admin` | Notify Admin agent |
 | `@human` | Notify human reviewer |
 
 ---
@@ -651,5 +605,5 @@ PR-Ready → Testing → Tests-Passed → PM-Validated → Human-Verified → On
 ## Related Documentation
 
 - [sop.md](./sop.md) - Main workflow SOP
-- [../MULTI_AGENT_WORKFLOW.md](../MULTI_AGENT_WORKFLOW.md) - Workflow overview
-- [../EPIC_REGISTRY.md](../EPIC_REGISTRY.md) - Epic and CUJ definitions
+- [EPIC_REGISTRY.md](./EPIC_REGISTRY.md) - Epic/CUJ registry template
+- [MANUAL_TESTING_GUIDE.md](./MANUAL_TESTING_GUIDE.md) - Manual testing guide template
