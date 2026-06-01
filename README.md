@@ -1,260 +1,224 @@
-# Multi-Agent Workflow (MAW) v5
+# Multi-Agent Workflow (MAW) v6
 
-A reusable multi-agent CI/CD framework for **Claude Code + Conductor**. Five specialized AI agents coordinate via Linear labels to drive features from intake through production with minimal human intervention.
+An autonomous development pipeline driven by Linear issues. Agents pick up work, develop, test, pass CI, and produce PRs ready for review -- no human dispatch required. After merge, changes flow through staging to production, with OTA update support for decentralized deployments.
 
-Battle-tested on a production SaaS application (Yarda AI -- AI-powered landscape design studio).
+## How It Works
 
----
-
-## Pipeline
+A human or PM agent creates issues in Linear. From there, the pipeline is autonomous:
 
 ```
-/workon {{ISSUE_PREFIX}}-XXX (continuous, workspace-scoped)
- PM -> Builder -> Deploy + Smoke -> Tester (E2E + code review + Chrome CUJ) -> Locally-Tested
-                                                                                    |
-                 XS/S: auto-adds Human-Verified (no human gate)                     |
-                 M+: human verifies external-system items, adds Human-Verified      |
-                                                                                    v
-/tpm sync (global, detects Human-Verified)
- Merge PR to main -> Wait 5 min -> Prod smoke test -> In-Production
+Linear Issue (Backlog / Todo)
+  |
+  v
+Agent Pickup (In Progress)
+  |-- PM elaboration (if scope is unclear)
+  |-- Builder implementation
+  |     |-- Architect phase (plan changes, model: opus)
+  |     +-- Editor phase (apply changes, model: sonnet)
+  |
+  v
+Automated CI (GitHub Actions)
+  |-- Typecheck, lint, unit tests, build
+  |
+  v
+Tester Verification
+  |-- Code review
+  |-- E2E tests
+  +-- Chrome CUJ verification (if UI-touching)
+  |
+  v
+PR Ready for Review
+  |-- Agent review (code-reviewer) OR human review
+  |
+  v
+Merge to main
+  |-- Auto-deploy to staging
+  |-- Staging smoke tests
+  |-- Promote to production (manual gate, or auto for XS/S)
+  +-- OTA update push to decentralized instances
 ```
 
----
+## Design Principles
 
-## Key Features
+1. **Linear is the single source of truth.** All pipeline state lives in Linear labels and structured attachments. No shadow databases, no local state files.
+2. **Autonomous pickup.** Agents watch for ready issues and claim them. No human needed to dispatch work.
+3. **Multi-runtime.** Works from Claude Code CLI, Claude Code desktop, Contractor (cloud agent), or any MCP-capable AI coding tool.
+4. **CI/CD native.** GitHub Actions handles testing, building, and deploying. Agents trigger pipelines; they do not replace them.
+5. **Review is a separate gate.** PRs are created and CI passes before any review happens. Review is performed by an agent (code-reviewer) or a human -- never by the builder who wrote the code.
+6. **Staging before production.** Every change validates in staging before reaching users.
+7. **OTA updates for decentralized deployments.** Edge instances (Mac minis, VPS, client servers) pull updates from production on a configurable interval.
+8. **Structured handoffs.** Agents communicate through JSON schemas stored as Linear attachments. No free-text parsing between pipeline stages.
 
-| Feature | Description |
+## Agent Roles
+
+| Agent | Role | Merges? |
+|-------|------|---------|
+| **Orchestrator** | Routes issues through the pipeline | No |
+| **PM** | Elaborates requirements, sizes issues, writes acceptance criteria | No |
+| **Builder** | Implements features and fixes (architect/editor split) | No |
+| **Tester** | Runs tests, performs code review, verifies CUJs | No |
+| **Reviewer** | Independent code review (separate from tester) | No |
+| **TPM** | Ships verified PRs, manages staging-to-production promotion | **Yes -- sole merge authority** |
+| **Admin** | Deployment management, health checks, OTA coordination | No |
+
+Only the TPM merges. This is enforced by convention and branch protection rules. Every other agent produces artifacts (PRs, test reports, review comments) but never merges.
+
+## Commands
+
+### Development
+
+| Command | Description |
 |---------|-------------|
-| **Two-Phase Orchestration** | `/workon` drives intake-to-tested; `/tpm sync` ships to production |
-| **Size-Based Automation** | XS/S auto-ship with no human gate; M+ require human verification of external-system items only |
-| **Linear-Native State Machine** | All workflow state tracked via Linear labels -- agents are stateless |
-| **Workspace-Scoped** | Each Conductor workspace handles exactly one issue; no cross-workspace awareness |
-| **Browser-Verified** | Chrome CUJ verification via `mcp__claude-in-chrome__*` tools before marking tested |
-| **Code Review Built-In** | Tester reviews PR diff with `GetWorkspaceDiff` + `DiffComment`; CRITICAL/HIGH findings block merge |
-| **Auto-Fix Loop** | Test failures auto-spawn Builder to fix, then re-invoke Tester (max 2 retries before escalation) |
-| **Rollback-Ready** | TPM keeps `git revert HEAD` ready; failed prod smoke tests trigger automatic rollback |
+| `/workon <ISSUE>` | Drive a specific issue through the full pipeline |
+| `/pm <description>` | Create or elaborate requirements for an issue |
+| `/builder` | Auto-pickup the highest priority ready issue |
+| `/builder <ISSUE>` | Implement a specific issue |
+| `/tester <ISSUE>` | Run test suite and verification for an issue |
+| `/reviewer <ISSUE>` | Perform independent code review on a PR |
 
----
+### Shipping
 
-## Architecture
+| Command | Description |
+|---------|-------------|
+| `/tpm sync` | Ship all reviewed and verified issues |
+| `/tpm promote` | Promote staging to production |
+| `/tpm ota-status` | Check OTA update status across all instances |
 
-### Agents
+### Operations
 
-| Agent | Command | Responsibility | Merges to main? |
-|-------|---------|----------------|-----------------|
-| **PM** | `/pm` | Elaborate requirements, create Linear issues, set size/epic/CUJs | No |
-| **Builder** | `/builder` | Implement feature, write E2E tests, create PR (rebased on `main`) | No |
-| **Tester** | `/tester` | E2E tests, code review, Chrome CUJ verification, human checklist | No |
-| **TPM** | `/tpm` | Project planning, wave execution, **sole merge authority to `main`**, auto-shipping | **YES (sole agent)** |
-| **Admin** | `/admin` | Ops-only: health checks, deployment status, database queries | No |
+| Command | Description |
+|---------|-------------|
+| `/admin health` | Run service health checks |
+| `/admin deploy <env>` | Deploy to a specific environment |
 
-### Label State Machine
+## Environments
 
-```
-PR-Ready -> Testing -> Tests-Passed -> Locally-Tested -> Human-Verified -> In-Production
-                |                       (Chrome CUJ)     (human/auto)      (TPM merges)
-                v
-           Tests-Failed (back to Builder)
-```
+| Environment | Purpose | Deploy Trigger |
+|-------------|---------|----------------|
+| **Development** | Local dev server | Manual (`pnpm dev`) |
+| **CI** | Automated testing | PR push to GitHub |
+| **Staging** | Pre-production validation | Merge to `main` |
+| **Production** | Live users | Manual promote or auto (XS/S issues) |
+| **Edge instances** | Client Mac minis, VPS, self-hosted | OTA pull from production |
 
-**Staging-Required Flow (XL + `staging-required`):**
-```
-PR #1->staging -> Testing -> Tests-Passed -> Staging-Tested -> Human-Verified
-                                                                     |
-                                                              TPM creates PR #2 -> main
-                                                                     |
-                                                              TPM merges -> Prod Smoke -> In-Production
-                                                                     |
-                                                              TPM rebases staging on main
-```
+## Decentralized Deployment and OTA Updates
 
----
+MAW v6 supports decentralized deployment to infrastructure you do not centrally control:
 
-## Size-Based Deployment Policy
+- **Mac minis** at client sites
+- **VPS** instances (DigitalOcean, Hetzner, etc.)
+- **Cloud** deployments (Railway, Fly.io, AWS)
+- **Self-hosted** on client-managed servers
 
-| Size | Points | PR Target | Human Gate | Deployment |
-|------|--------|-----------|------------|------------|
-| XS | 1 | `main` | None (auto-ship) | Direct to production |
-| S | 2 | `main` | None (auto-ship) | Direct to production |
-| M | 3 | `main` | Human verifies external items | Direct to production |
-| L | 5 | `main` | Human verifies external items | Direct to production |
-| XL | 8+ | `main` (or `staging` if `staging-required`) | Human verifies external items | Direct or via staging |
+### OTA Update Flow
 
-**`staging-required`** is set by PM when an XL issue modifies 3+ existing user-facing files AND touches auth/payments/core features/shared UI.
+OTA uses a pull-based model. Edge instances are never pushed to directly.
 
----
+1. **Tag and publish.** Production release is tagged with a version and published to the OTA registry.
+2. **Poll.** Edge instances check the registry on a configurable interval (default: 5 minutes).
+3. **Download and validate.** Update artifact is downloaded and verified against a checksum and cryptographic signature.
+4. **Rolling restart.** New version starts alongside the old one. Health check must pass before traffic cuts over.
+5. **Automatic rollback.** If the health check fails, the instance reverts to the previous version and reports the failure.
+
+No instance is left in a broken state. Failed updates are logged and surfaced through `/tpm ota-status`.
 
 ## Quick Start
 
-### 1. Copy files to your project
+### 1. Fork and initialize
 
-```bash
-# Copy commands
-mkdir -p .claude/commands
-cp commands/*.md .claude/commands/
-
-# Copy skills
-mkdir -p .claude/skills
-cp -r skills/* .claude/skills/
+```sh
+# Fork this repo, then:
+git clone <your-fork>
+cd maw-v6
+./init.sh
 ```
 
-### 2. Customize placeholders
+`init.sh` prompts for project-specific values (see Setup Placeholders below) and writes them into the command templates and CI configuration.
 
-Find and replace these placeholders in all files:
+### 2. Install commands
 
-| Placeholder | Replace With | Example |
-|-------------|-------------|---------|
-| `{{TEAM_NAME}}` | Your Linear team name | `MyApp` |
-| `{{ISSUE_PREFIX}}` | Your Linear issue prefix | `APP` |
-| `{{PRODUCTION_URL}}` | Production frontend URL | `myapp.com` |
-| `{{STAGING_URL}}` | Staging frontend URL | `staging.myapp.com` |
-| `{{BACKEND_PROD_URL}}` | Production backend URL | `api.myapp.com` |
-| `{{BACKEND_STAGING_URL}}` | Staging backend API URL | `staging-api.myapp.com` |
-| `{{EPIC_LIST}}` | Your project epics | `epic:auth, epic:billing, epic:core` |
-| `{{TEST_USER_EMAIL}}` | E2E test user email | `test+e2e@myapp.com` |
-| `{{TEST_USER_PASSWORD}}` | E2E test user password | `testpass123` |
-
-### 3. Set up Linear labels
-
-Create these labels in your Linear team:
-
-**Workflow Labels:**
-- `PR-Ready` (Blue) -- Builder sets when PR is created
-- `Testing` (Yellow) -- Tester sets when actively testing
-- `Tests-Passed` (Green) -- Tester sets when automated E2E tests pass
-- `Tests-Failed` (Red) -- Tester sets when failures found
-- `Locally-Tested` (Teal) -- Tester sets after automated + Chrome CUJ verification pass (default path)
-- `Staging-Tested` (Teal) -- Tester sets after staging verification (staging-required path)
-- `Human-Verified` (Orange) -- Human sets after external-system verification (or auto-set for XS/S)
-- `Prod-Smoke-Passed` (Gray) -- TPM sets after production smoke tests pass
-- `In-Production` (Gray) -- TPM sets when live in production
-
-**Size Labels:**
-- `XS` (1 pt), `S` (2 pt), `M` (3 pt), `L` (5 pt), `XL` (8 pt)
-
-**Epic Labels** (customize for your project):
-- `epic:auth`, `epic:billing`, `epic:core`, `epic:admin`, etc.
-
-**Optional Labels:**
-- `staging-required` -- PM sets on XL issues that need staging validation
-- `PM-Validated` -- PM sets after optional user-perspective validation
-- `Builder-Ready` -- PM sets when requirements are clear
-
-### 4. Add MAW section to your CLAUDE.md
-
-```markdown
-## Multi-Agent Workflow (MAW)
-
-**MANDATORY:** All development MUST use MAW. No development outside MAW except production hotfixes.
-
-### Quick Start: `/workon {{ISSUE_PREFIX}}-XXX`
-
-### Agent Roles
-
-| Agent | Role | Invoked By |
-|-------|------|------------|
-| **PM** | Elaborate requirements, set size, create test plan | `/workon` or `/pm` |
-| **Builder** | Implement feature, create PR | `/workon` or `/builder` |
-| **Tester** | Run E2E tests, code review, Chrome CUJ verification | `/workon` or `/tester` |
-| **TPM** | Merge to main, production deployment | `/tpm sync` |
-
-### Deployment Policy
-
-| Size | Path |
-|------|------|
-| XS/S (1-2 pts) | PR -> `main`, auto-ships (no human gate) |
-| M/L (3-5 pts) | PR -> `main`, human verification required |
-| XL (8+ pts) | PR -> `main` (or `staging` if `staging-required`), human verification required |
+```sh
+cp -r commands/ <your-project>/.claude/commands/
 ```
 
----
+### 3. Configure integrations
 
-## Prerequisites
+- **Linear webhook** -- see [docs/CICD.md](docs/CICD.md) for the webhook URL and event filters.
+- **GitHub Actions** -- copy and customize workflows from `ci/github-actions/`.
+- **OTA registry** -- set up the update endpoint (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
-| Tool | Purpose |
-|------|---------|
-| [Claude Code](https://claude.ai/code) | AI coding agent |
-| [Conductor](https://conductor.dev) | Multi-workspace orchestration |
-| [Linear](https://linear.app) | Issue tracking and workflow state |
-| [GitHub](https://github.com) | Source control, PRs, code review |
-| Chrome + Claude-in-Chrome extension | Browser automation for CUJ verification |
+### 4. Start working
 
-### MCP Tools
+```sh
+# Drive a specific issue through the pipeline
+/workon AGE-123
 
-| MCP Server | Purpose |
-|------------|---------|
-| **Linear** (`mcp__linear__*`) | Issue tracking, labels, comments, workflow state |
-| **GitHub** (`gh` CLI) | PRs, code review, merges |
-| **Claude-in-Chrome** (`mcp__claude-in-chrome__*`) | Browser automation for Chrome CUJ verification |
-| **Conductor** (`mcp__conductor__*`) | `GetWorkspaceDiff`, `DiffComment`, `AskUserQuestion` |
-
-Optional (project-specific):
-| MCP Server | Purpose |
-|------------|---------|
-| **Railway** | Backend deployment (if using Railway) |
-| **Vercel** | Frontend deployment (if using Vercel) |
-| **Supabase** | Database queries (if using Supabase) |
-
----
-
-## Project Structure
-
-```
-Multi-Agent-Workflow/
-+-- README.md                    # This file
-+-- docs/
-|   +-- sop.md                   # Standard Operating Procedure (main reference)
-|   +-- protocol.md              # Agent communication protocol
-|   +-- EPIC_REGISTRY.md         # Epic/CUJ registry template
-|   +-- MANUAL_TESTING_GUIDE.md  # Manual testing guide template
-|   +-- MULTI_AGENT_WORKFLOW.md  # Redirect to sop.md
-+-- commands/
-|   +-- README.md                # Commands quick reference
-|   +-- workon.md                # Orchestrator (per-issue entry point)
-|   +-- pm.md                    # PM agent workflow
-|   +-- builder.md               # Builder agent workflow
-|   +-- tester.md                # Tester agent workflow
-|   +-- tpm.md                   # TPM agent (project orchestrator + auto-shipper)
-|   +-- admin.md                 # Admin agent (ops-only)
-+-- skills/
-|   +-- README.md                # Skills overview
-+-- templates/
-    +-- test-plan-template.md    # Test plan template for features
+# Or let an agent auto-pickup the next ready issue
+/builder
 ```
 
----
+## Setup Placeholders
 
-## Safety Rules
+`init.sh` will prompt for each of these. They are used throughout commands, CI config, and documentation templates.
 
-### NEVER:
-1. **Merge to `main` unless you are the TPM agent** -- TPM is the sole merge authority
-2. Do bulk `staging` -> `main` merges -- each feature gets its own PR to `main`
-3. Deploy to production without `Human-Verified` label
-4. Skip smoke tests after any deployment
-5. Auto-fix production issues
-6. Run destructive database operations without confirmation
-7. Create a PR without rebasing feature branch on `main` first
+| Placeholder | Example | Description |
+|-------------|---------|-------------|
+| `ISSUE_PREFIX` | `AGE` | Linear team prefix for issue IDs |
+| `TEAM_NAME` | `AgentDash` | Linear team name |
+| `PRODUCTION_URL` | `https://app.agentdash.com` | Production URL |
+| `STAGING_URL` | `https://staging.agentdash.com` | Staging URL |
+| `GITHUB_REPO` | `thetangstr/agentdash` | GitHub repository (owner/repo) |
+| `OTA_REGISTRY_URL` | `https://releases.agentdash.com` | OTA update registry endpoint |
 
-### ALWAYS:
-1. **Rebase feature branch on `main`** before creating any PR
-2. **Wait for deployments to finish** before running smoke tests
-3. **Run smoke tests after every deployment** -- staging and production
-4. Run health checks before/after deployments
-5. Document actions in Linear
-6. Have rollback command ready (`git revert HEAD`)
-7. TPM rebases `staging` on `main` after production deploy (staging-required only)
-8. Builder writes E2E tests for S+ features
-9. Tester performs code review before Chrome CUJ verification
+## Pipeline State Machine
 
----
+Issues move through Linear statuses. Labels encode additional pipeline state.
+
+```
+Backlog  -->  Todo  -->  In Progress  -->  In Review  -->  Done
+                             |                |
+                             |                +-- Review rejected: back to In Progress
+                             |
+                             +-- CI failed: stays In Progress, agent notified
+```
+
+Labels used by the pipeline:
+
+| Label | Meaning |
+|-------|---------|
+| `size/xs`, `size/s`, `size/m`, `size/l`, `size/xl` | Issue size (affects auto-ship eligibility) |
+| `needs-pm` | Requires PM elaboration before build |
+| `needs-review` | PR is ready for review |
+| `reviewed` | Review passed |
+| `ci-passing` | All CI checks green |
+| `staged` | Deployed to staging |
+| `promoted` | Deployed to production |
+| `ota-pushed` | OTA update published for edge instances |
+
+## Structured Handoffs
+
+Agents pass structured data between pipeline stages using JSON schemas stored as Linear issue attachments. This eliminates ambiguity and enables any runtime (CLI, desktop, cloud) to participate in the pipeline.
+
+Schemas live in `schemas/` and cover:
+
+- **Issue elaboration** -- PM output (acceptance criteria, scope, size estimate)
+- **Build plan** -- Architect output (files to change, approach, risks)
+- **Test report** -- Tester output (pass/fail, coverage, CUJ results)
+- **Review verdict** -- Reviewer output (approve/request-changes, findings)
+- **Deploy manifest** -- TPM output (version, environment, rollback plan)
+
+Each schema is versioned. Agents validate payloads before writing them.
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [docs/protocol.md](docs/protocol.md) | Label state machine, structured handoff protocol |
+| [docs/sop.md](docs/sop.md) | Standard operating procedures for each agent role |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Staging, production promotion, OTA update setup |
+| [docs/CICD.md](docs/CICD.md) | CI/CD pipeline design and GitHub Actions config |
+| [schemas/](schemas/) | JSON schemas for all handoff payloads |
 
 ## License
 
 MIT
-
----
-
-## Related Projects
-
-- [Claude Code](https://claude.ai/code) -- Anthropic's CLI for Claude
-- [Linear](https://linear.app) -- Issue tracking

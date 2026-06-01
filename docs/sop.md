@@ -1,602 +1,431 @@
-# Multi-Agent Workflow (MAW) - Standard Operating Procedure
+# Multi-Agent Workflow v6 -- Standard Operating Procedure
 
-**Version:** 5.0
-**Last Updated:** 2026-03-10
-**Owner:** Engineering Team
+This document describes how all feature and bug development works at AgentDash. Read this end-to-end before touching any issue.
 
 ---
 
-## Mandatory MAW Policy
+## 1. Mandatory Policy
 
-> **ALL feature and bug development MUST use the MAW workflow.**
->
-> **Exceptions:**
->
-> - Production hotfixes (critical bugs requiring immediate deployment)
-> - Infrastructure/DevOps changes (CI/CD, environment config)
->
-> **No development should happen outside MAW.** This ensures:
->
-> - Consistent quality gates (PM -> Builder -> Tester -> Human -> Production)
-> - Proper test coverage for all changes
-> - Audit trail via Linear labels
-> - Predictable deployment pipeline
->
-> **Critical Branching Rules:**
->
-> - **Builder MUST rebase feature branch on `main`** before creating any PR (resolves conflicts)
-> - **TPM is the ONLY agent allowed to merge anything to `main`**
-> - **No bulk staging->main merges** -- each feature gets its own PR to `main`
-> - **After production deploy, TPM rebases `staging` on `main`** to keep it in sync (staging-required only)
+**All feature and bug development goes through MAW.** No exceptions unless the work falls into one of these two categories:
+
+- **Production hotfixes** -- Critical breakage in production that cannot wait for the full pipeline. Hotfixes still require a PR, CI green, and a post-merge smoke test, but they skip PM elaboration, formal sizing, and the Tester agent loop. The on-call human owns the hotfix and documents it in Linear after the fact.
+- **Pure infrastructure** -- CI configuration, dependency bumps, tooling scripts, documentation-only changes. These go through normal PR review but do not require Linear issues, PM elaboration, or the Tester agent.
+
+Everything else -- features, bug fixes, refactors with user-facing impact, data model changes, API changes -- enters the MAW pipeline.
+
+**One agent per issue at a time.** No two agents may work on the same Linear issue concurrently. The orchestrator enforces this by checking issue labels before dispatching.
 
 ---
 
-## Workspace-Scoped Architecture
+## 2. Pipeline Overview
 
-Each Conductor workspace is a **self-contained pipeline** for ONE Linear issue. All agents run within the same workspace. No cross-workspace awareness.
+The full lifecycle of a change, from idea to production:
 
-### Two-Phase Orchestration
+```
+Linear Issue (Todo)
+    |
+    v
+Orchestrator picks up issue
+    |
+    v
+PM Agent -- elaborate requirements, set size, write acceptance criteria
+    |
+    v
+Builder Agent -- architect, implement, write tests, create PR
+    |
+    v
+Tester Agent -- automated tests, code review, Chrome CUJ verification
+    |
+    v
+Reviewer -- independent code review (agent or human, based on size)
+    |
+    v
+Human Verification Gate (M+ sizes)
+    |
+    v
+TPM Agent -- merge to main, deploy, production smoke test
+    |
+    v
+In Production -- OTA update to edge instances
+```
 
-| Phase | Owner | Trigger | Stops When |
-|-------|-------|---------|------------|
-| Intake -> Locally-Tested (or Staging-Tested) | `/workon` | Human runs `/workon {{ISSUE_PREFIX}}-XXX` | `Locally-Tested` or `Staging-Tested` label set |
-| XS/S auto-ship | `/workon` | `Locally-Tested` set on XS/S issue | `/workon` auto-adds `Human-Verified`, hands off to TPM |
-| Human-Verified -> Production (M+ only) | `/tpm sync` | Human adds `Human-Verified` label, runs `/tpm sync` | `In-Production` label set |
+For XS/S issues the pipeline is compressed: PM sets size, Builder implements, Tester verifies, and TPM ships without a human gate. The full pipeline still runs -- only the human verification step is removed.
 
-### Human Gates
+### Label-Driven State Machine
 
-The pipeline is **fully autonomous** for XS/S issues (1-2 pts). For **M+ issues (3+ pts)**, there is one human gate:
+Every transition in the pipeline is tracked by Linear labels. Agents read labels to determine what to do next and write labels to signal completion. The canonical label flow:
 
-**Human Verification (M+ only):** After agents complete automated tests AND Chrome-based CUJ verification, the human verifies ONLY external-system items (third-party dashboards, email delivery, AI quality) on the test environment. Then adds `Human-Verified` label. TPM auto-ships from there.
+```
+(no labels) -> PM elaborates -> (spec in description)
+  -> Builder implements -> PR-Ready
+  -> Tester starts -> Testing
+  -> Tests pass -> Tests-Passed -> Locally-Tested (or Staging-Tested)
+  -> Human approves (M+) -> Human-Verified
+  -> TPM ships -> In-Production
+```
 
-**XS/S Auto-Ship:** For XS/S issues, `/workon` auto-adds `Human-Verified` after `Locally-Tested` -- no human gate needed. TPM auto-ships from there.
-
-**What agents verify (human does NOT need to):**
-
-- Pages load correctly, UI elements visible and interactive
-- Forms submit, navigation flows work end-to-end
-- No JavaScript console errors, no failed network requests
-- Visual layout correct, responsive behavior works
-- Auth gates work correctly
-
-**What ONLY humans verify:**
-
-- Third-party dashboard transactions (e.g., Stripe Dashboard)
-- Email delivery (magic links, receipts, notifications)
-- Third-party webhook processing
-- AI-generated content quality/aesthetics
-- OAuth popup completion
+If tests fail: `Tests-Failed` is applied, Builder is re-spawned for fixes (max 2 retries), then Tester re-runs. After 2 failed fix attempts, the issue escalates to a human.
 
 ---
 
-## Environments
+## 3. Agent Descriptions
 
-| Environment | Frontend URL | Backend URL | Purpose |
-|-------------|--------------|-------------|---------|
-| **Local Dev** | `localhost:3000` | `{{BACKEND_STAGING_URL}}` | **Default testing: E2E, Chrome CUJ, human verification** |
-| **Staging** | `{{STAGING_URL}}` | `{{BACKEND_STAGING_URL}}` | **Staging-required only: XL issues modifying existing prod code** |
-| **Production** | `{{PRODUCTION_URL}}` | `{{BACKEND_PROD_URL}}` | Live production |
+### 3.1 Orchestrator
 
----
+**What it does:** Routes Linear issues through the pipeline by reading their current state and dispatching the correct agent. Handles retries and timeouts.
 
-## Quick Start: `/workon {{ISSUE_PREFIX}}-XXX`
+**When it acts:** Invoked by `/workon AGE-123`. Runs a continuous loop: fetch issue, determine phase from labels, dispatch the next agent, wait for completion, re-fetch, repeat.
 
-The **single entry point** for all development in a workspace:
+**Tools:** Linear MCP (read issues, labels), Task tool (spawn subagents).
 
-```bash
-/workon {{ISSUE_PREFIX}}-123   # Drives issue from intake through Locally-Tested (or Staging-Tested)
-```
+**Key behaviors:**
+- Parses issue ID from the command
+- Checks for size estimate; dispatches PM to set one if missing
+- Determines deployment path (direct vs staging-required)
+- Chains agents sequentially: PM -> Builder -> Tester -> (human gate) -> TPM
+- Re-fetches issue state after each agent completes to decide the next step
+- Retries Linear API calls up to 3 times on transient failure
+- Defaults to size M if sizing is ambiguous (safer to have a test plan)
+- Auto-spawns Builder on test failure (max 2 retries before human escalation)
 
-**What `/workon` does:**
+### 3.2 PM (Product Manager)
 
-1. Fetches issue from Linear, checks size
-2. Routes through PM -> Builder -> Deploy -> Tester (automated + Chrome)
-3. Stops at `Locally-Tested` (default) or `Staging-Tested` (staging-required) -- human verifies external items, adds `Human-Verified`
-4. Then `/tpm sync` auto-ships to production
+**What it does:** Elaborates raw requirements into structured Linear issues with acceptance criteria, CUJ definitions, and test plans.
 
-**Deployment Path Routing:**
+**When it acts:** When an issue has no spec, no acceptance criteria, or no size estimate.
 
-| Condition | PR Target | Testing Environment | Quality Gate |
-|-----------|-----------|---------------------|--------------|
-| All sizes, no `staging-required` label | `main` | localhost:3000 + staging backend | `Locally-Tested` |
-| XL + `staging-required` label | `staging` | {{STAGING_URL}} | `Staging-Tested` |
+**Tools:** Linear MCP (create/update issues, comments, labels), OMC deep-interview and plan skills for ambiguous requests.
 
-**`staging-required` is set by PM** when an XL issue modifies 3+ existing user-facing files AND touches auth/payments/core features/shared UI.
+**Key behaviors:**
+- Extracts key concepts, user types, and epic mapping from raw descriptions
+- Assigns T-shirt size using the sizing rubric (files changed, LOC, components, data model, risk)
+- Writes structured issue description: summary, user stories, acceptance criteria, test plan, out-of-scope
+- Sets the `staging-required` label on XL issues that touch auth, payments, or shared UI
+- Optionally validates deployed features as a real user (browser automation) before human sign-off
+- Maintains the epic registry and manual testing guide
 
----
+### 3.3 Builder
 
-## Overview
+**What it does:** Implements the feature described in a Linear issue. Creates a feature branch, writes code and tests, and opens a PR.
 
-The Multi-Agent Workflow (MAW) is a CI/CD system using specialized AI agents that coordinate via Linear labels within workspace-scoped pipelines.
+**When it acts:** When an issue has acceptance criteria but no PR.
 
-```
-+-------------------------------------------------------------+
-| /workon {{ISSUE_PREFIX}}-XXX (continuous, no human needed)    |
-+-------------------------------------------------------------+
-|                                                               |
-|  1. PM -- elaborate requirements, size, test plan             |
-|       |                                                       |
-|       v                                                       |
-|  2. BUILDER -- implement, rebase on main, create PR           |
-|       |       + E2E tests for S+ features                     |
-|       |       Default: PR -> main                             |
-|       |       Staging-required: PR -> staging                 |
-|       v                                                       |
-|  3. DEPLOY -- wait for deploy, health check,                  |
-|       |       then run deployment smoke test                  |
-|       v                                                       |
-|  4. TESTER (automated) -- E2E tests                           |
-|       |                                                       |
-|       v                                                       |
-|  4.5 TESTER (code review) -- diff review with                 |
-|       |       GetWorkspaceDiff + DiffComment                  |
-|       |       auto-fix loop for CRITICAL/HIGH findings        |
-|       v                                                       |
-|  5. TESTER (chrome) -- walk CUJs with mcp__claude-in-chrome   |
-|       |                record GIFs, verify visually            |
-|       v                                                       |
-|  XS/S: Locally-Tested -> auto-adds Human-Verified             |
-|     /workon hands off to TPM (no human gate)                  |
-|  M+: Locally-Tested -- /workon STOPS here                     |
-|     Posts human verification checklist (external items only)   |
-|  Staging-required: Staging-Tested -- /workon STOPS here       |
-|     Posts human verification checklist (external items only)   |
-|                                                               |
-+-------------------------------------------------------------+
+**Tools:** Git, GitHub CLI, Linear MCP, pnpm (typecheck/test/build), OMC team pipeline for M+ sizes.
 
-================================================================
- M+ ONLY: Human verifies external-system items, adds
-          Human-Verified label in Linear
- XS/S: Auto-verified by /workon (no human gate)
-================================================================
+**Key behaviors:**
+- Creates feature branch from main (`pap-<number>-<short-name>`)
+- For XS/S: writes the change directly
+- For M: delegates to OMC team pipeline with 2 parallel executor workers
+- For L: delegates to OMC team pipeline with 3 parallel executor workers
+- For XL: delegates to OMC team pipeline with Ralph persistence loop (retry-on-fail)
+- Writes unit tests and E2E tests (required for S+ sizes)
+- Runs mandatory regression suite: `pnpm -r typecheck && pnpm test:run && pnpm build`
+- Rebases on latest main before creating PR
+- Creates PR targeting main (or staging for staging-required issues)
+- Adds `PR-Ready` label and posts handoff comment for Tester
+- **Never merges to main** -- that is TPM's exclusive authority
+- On test failure callback: reads failure details, fixes root cause, pushes to existing PR branch, re-requests testing
 
-+-------------------------------------------------------------+
-| /tpm sync (detects Human-Verified, auto-ships)               |
-+-------------------------------------------------------------+
-|                                                               |
-|  6. (staging-required) TPM creates PR #2 -> main             |
-|       |                                                       |
-|       v                                                       |
-|  7. MERGE -- TPM merges PR to main                            |
-|       |     (ONLY agent allowed to merge to main)             |
-|       v                                                       |
-|  8. PROD SMOKE -- production smoke test                       |
-|       |                                                       |
-|       v                                                       |
-|  9. DONE -- In-Production label + issue state -> Done         |
-|            (staging-required: rebase staging on main)          |
-|                                                               |
-+-------------------------------------------------------------+
-```
+### 3.4 Tester
 
-**Key Rules:**
+**What it does:** Runs the full verification suite against a PR: automated tests, code review, and Chrome CUJ (Critical User Journey) verification.
 
-1. Builder **rebases on `main`** before creating any PR
-2. **XS/S (1-2 pts):** Auto-ships after `Locally-Tested` -- no human verification gate
-3. **M+ (3+ pts):** Requires human to add `Human-Verified` label before TPM ships
-4. **Staging-required (XL + modifies existing):** PR #1 to `staging`, then PR #2 to `main`
-5. **TPM is the ONLY agent that merges to `main`**
-6. **Every deployment MUST include a smoke test** -- wait for deployment to finish, then run smoke tests
-7. For staging-required only: TPM **rebases `staging` on `main`** after production deploy
+**When it acts:** When an issue has the `PR-Ready` label.
 
----
+**Tools:** pnpm (typecheck/test/build), Playwright, Linear MCP, Chrome browser automation (navigate, screenshot, form input, console/network monitoring, GIF recording), OMC UltraQA and qa-tester.
 
-## Deployment Smoke Test Policy
+**Key behaviors:**
+- Runs mandatory regression gates first: `pnpm -r typecheck && pnpm test:run && pnpm build`
+- Runs issue-specific E2E tests via OMC UltraQA (up to 5 auto-fix cycles)
+- Performs code review on the PR diff (security, architecture, performance, error handling)
+- Leaves inline comments with severity ratings (CRITICAL/HIGH block, MEDIUM/LOW are advisory)
+- For M+ issues: delegates browser CUJ verification to qa-tester agent
+- For XS/S issues: runs inline Chrome CUJ verification (navigate, interact, screenshot, verify)
+- Checks for console errors and failed network requests
+- Tests responsive behavior for UI changes (375x667 mobile viewport)
+- On pass: adds `Locally-Tested` (or `Staging-Tested`), posts human verification checklist
+- On fail: adds `Tests-Failed`, creates sub-issues for each failure, auto-spawns Builder (max 2 retries)
+- Runs `/oh-my-claudecode:verify` as final pre-handoff confirmation that acceptance criteria are met
 
-> **Every deployment -- staging or production -- MUST include a smoke test.**
->
-> No deployment is considered complete until smoke tests pass. This is a universal rule.
+### 3.5 Reviewer
 
-### Procedure
+**What it does:** Provides an independent code review separate from the Tester's review. Can be an agent (code-reviewer, security-reviewer) or a human, depending on issue size and risk.
 
-1. **Wait for deployment** to finish (build + deploy)
-2. **Health check** the deployed environment:
-   - Staging: `curl -s https://{{BACKEND_STAGING_URL}}/health`
-   - Production: `curl -s https://{{BACKEND_PROD_URL}}/health` and `curl -s -o /dev/null -w "%{http_code}" https://{{PRODUCTION_URL}}`
-3. **Run smoke tests** against the deployed environment
-4. **If smoke tests fail:** Investigate immediately. For production: revert the merge (`git revert HEAD && git push`).
+**When it acts:** After Tester passes automated tests and before human verification gate.
 
-### Who Runs Smoke Tests
+**Tools:** GitHub PR review tools, diff analysis, OMC code-reviewer and security-reviewer agents.
 
-| Deployment | Triggered By | Smoke Test Run By |
-|------------|--------------|-------------------|
-| Staging (PR merged to `staging`) | Builder/Tester | **Tester** (as part of `/workon` flow) |
-| Production (PR merged to `main`) | TPM | **TPM** (as part of `/tpm sync` flow) |
-| Local dev (PR branch checked out) | On PR creation | **Tester** (E2E tests on localhost:3000) |
+**Key behaviors:**
+- For XS/S: agent code review is sufficient (performed as part of Tester's Phase 1.5)
+- For M: agent code review required; human spot-check recommended
+- For L/XL: human code review mandatory
+- Security-reviewer is triggered automatically for changes touching auth, billing, or email
+- Review findings at CRITICAL or HIGH severity block the PR and send it back to Builder
+- Review comments are posted as inline PR comments on GitHub
+
+### 3.6 TPM (Technical Program Manager)
+
+**What it does:** Sole merge authority to main. Plans multi-issue projects into waves. Ships verified features to production. Coordinates OTA updates.
+
+**When it acts:** Invoked by `/tpm sync` (the primary command). Also handles project planning (`/tpm <description>`), wave management (`/tpm wave`), and status reporting (`/tpm status`).
+
+**Tools:** Git, GitHub CLI (`gh pr merge`), Linear MCP, curl (health checks), pnpm (smoke tests).
+
+**Key behaviors:**
+- **Only agent that merges to main** -- this is a hard rule, no exceptions
+- Derives all state from Linear on every invocation (stateless)
+- Sequential merge protocol: completes the full cycle for one PR before starting the next (merge -> deploy -> health check -> smoke test -> Linear update)
+- For staging-required issues: creates PR #2 targeting main after staging verification passes
+- Reverts immediately on failed production smoke tests (`git revert HEAD`)
+- Rebases staging on main after every production deploy (staging-required issues)
+- Breaks projects into independently shippable issues with dependency DAGs
+- Plans execution waves (topological sort); wave N+1 starts only after all wave N issues reach In-Production
+- Displays a dashboard on every sync showing issue states, actions taken, and items needing human attention
+
+### 3.7 Admin
+
+**What it does:** Monitors service health, deployment status, and operational statistics. The ops toolkit.
+
+**When it acts:** Invoked by `/admin` (full check), `/admin health` (service health), or `/admin status` (deployment status).
+
+**Tools:** curl (health endpoints), GitHub API (deployment history), database queries (read-only).
+
+**Key behaviors:**
+- Checks backend and frontend health across all environments (production, staging)
+- Reports response times and HTTP status codes
+- Queries database for usage statistics (read-only, never writes)
+- Compares production vs staging when debugging discrepancies
+- Documents anomalies in Linear
+- Never runs DELETE or UPDATE queries on production without explicit human confirmation
+- Never modifies production environment variables or schema directly
 
 ---
 
-## Agents
+## 4. Size-Based Policy
 
-### 1. PM Agent (`/pm`)
+Issue size determines the rigor of testing, the human involvement required, and the deployment path.
 
-**Command:** `.claude/commands/pm.md`
+### Sizing Rubric
 
-**Responsibilities:**
+| Criterion | XS | S | M | L | XL |
+|-----------|----|----|----|----|-----|
+| Files changed | 1 | 1-2 | 3-5 | 6-10 | 10+ |
+| Lines of code | <20 | 20-100 | 100-300 | 300-1000 | 1000+ |
+| Components | UI only | Single layer | 2 layers | Full stack | System-wide |
+| Data model | None | None | Maybe | Yes | Major |
+| Risk | Cosmetic | Low | Medium | High | Critical |
+| Fibonacci points | 1 | 2 | 3 | 5 | 8+ |
 
-- Elaborate raw requirements into comprehensive specs
-- Determine epic (e.g., `epic:auth`, `epic:billing`, `epic:core`)
-- Assign T-shirt size (XS/S/M/L/XL) with points
-- Define CUJs (Critical User Journeys)
-- Create/update Linear issues with epic, size, CUJs, test plan
+### Testing Requirements by Size
 
-**Commands:**
+| Size | Unit Tests | E2E Tests | Test Plan | Code Review | Chrome CUJ |
+|------|-----------|-----------|-----------|-------------|------------|
+| XS | Optional | None | None | Agent (inline) | Agent (inline) |
+| S | If logic change | Required | None | Agent (inline) | Agent (inline) |
+| M | Required | Required | Required | Agent + human spot-check | qa-tester agent |
+| L | Required | Required | Full plan with CUJs | Human mandatory | qa-tester agent |
+| XL | Required | Full suite | Full spec | Human mandatory | qa-tester agent |
 
-```bash
-/pm                    # Interactive requirements session
-/pm <description>      # Elaborate specific feature
-```
+### Human Gate Policy
 
----
+| Size | Human Verification | Rationale |
+|------|-------------------|-----------|
+| **XS** | Not required | Auto-ship after CI + agent review pass. Low risk, cosmetic changes. |
+| **S** | Not required | Auto-ship after CI + agent review pass. Single-file, low-risk changes. |
+| **M** | Agent review + human spot-check | Requires either a full human review OR agent review with periodic human spot-checks. The human checklist is posted but does not block shipping if only agent-verifiable items remain. |
+| **L** | Human review mandatory | A human must review the PR, verify external-system items, and add the `Human-Verified` label before TPM can ship. |
+| **XL** | Human review mandatory | Same as L, plus staging verification is required if the `staging-required` label is set. |
 
-### 2. Builder Agent (`/builder`)
+### Builder Execution Engine by Size
 
-**Command:** `.claude/commands/builder.md`
-
-**Responsibilities:**
-
-- Pick up Linear issues with specs from PM
-- Research codebase and existing patterns
-- Implement feature on feature branch
-- **Rebase feature branch on `main`** before creating any PR
-- Write unit tests
-- Write E2E tests for S+ features
-- Create PR (default -> `main`, staging-required -> `staging`)
-- **NEVER merge to `main`** -- only TPM merges to main
-
-**Commands:**
-
-```bash
-/builder         # Auto-pickup highest priority issue
-/builder {{ISSUE_PREFIX}}-5   # Work on specific issue
-```
-
----
-
-### 3. Tester Agent (`/tester`)
-
-**Command:** `.claude/commands/tester.md`
-
-**Responsibilities:**
-
-- Pick up issues with `PR-Ready` label
-- Run scoped E2E tests
-- **Chrome CUJ Verification:** Walk through each CUJ visually using `mcp__claude-in-chrome__*` tools
-- **Code Review:** Review PR diff using `GetWorkspaceDiff` and `DiffComment`
-  - CRITICAL/HIGH findings block merge and trigger Builder auto-fix loop
-  - MEDIUM/LOW findings are noted as inline comments (non-blocking)
-- Mark `Locally-Tested` (default) or `Staging-Tested` (staging-required) only after automated tests, code review, AND Chrome CUJ verification pass
-- Create Human Verification Checklist with ONLY agent-impossible items
-- Auto-spawn Builder to fix failures (max 2 attempts)
-
-**Test Scope by Size:**
-
-| Size | Tier | Test Command | Regression |
-|------|------|-------------|------------|
-| XS | Critical | `npm run test:smoke` | Optional |
-| S | Critical | `npm run test:smoke` | Optional |
-| M | Epic | `npm run test:epic:<name>` | Required |
-| L | Epic | `npm run test:epic:<name>` (all affected) | Required |
-| XL | Full | `npm run test:full` | Required |
-
-**Commands:**
-
-```bash
-/tester {{ISSUE_PREFIX}}-5        # Test specific issue
-```
-
----
-
-### 4. Admin Agent (`/admin`) -- Ops Only
-
-**Command:** `.claude/commands/admin.md`
-
-**Responsibilities:**
-
-- Monitor deployment health
-- Run database queries
-- Check service status
-- **Ops-only** -- does NOT merge to main (TPM handles all merges)
-
-**Commands:**
-
-```bash
-/admin health           # Check service health
-/admin status           # Show deployment status
-```
-
----
-
-### 5. TPM Agent (`/tpm`) -- Merge Authority & Project Planner
-
-**Command:** `.claude/commands/tpm.md`
-
-**Responsibilities:**
-
-- **ONLY agent allowed to merge PRs to `main`** -- hard rule
-- Project planning: break projects into issues, plan waves
-- **Global `/tpm sync`:** scans ALL Human-Verified issues in Linear, auto-ships each sequentially
-  - For staging-required: creates PR #2 to main if needed
-  - Merges PR to main
-  - Runs production smoke tests
-  - On failure: reverts, adds Tests-Failed, continues to next issue
-  - For staging-required: rebases staging on main
-
-**Commands:**
-
-```bash
-/tpm <project>          # Break project into issues, plan waves
-/tpm sync               # Global: scan ALL Human-Verified issues, auto-ship sequentially
-/tpm wave               # Show current wave details
-/tpm status             # Quick read-only summary
-```
-
----
-
-## Linear Label State Machine
-
-### Label Definitions
-
-| Label | Set By | Meaning |
-|-------|--------|---------|
-| `PR-Ready` | Builder | PR created, ready for testing |
-| `Testing` | Tester | Tester actively testing |
-| `Tests-Passed` | Tester | Automated E2E tests passed |
-| `Tests-Failed` | Tester | Failures found, back to Builder |
-| `Locally-Tested` | Tester | Automated tests + Chrome CUJ verification both passed (default path) |
-| `Staging-Tested` | Tester | Automated tests + Chrome CUJ verification both passed (staging-required path) |
-| `PM-Validated` | PM | PM validated as real user (optional enrichment) |
-| `Human-Verified` | Human | Human approved external-system items |
-| `Prod-Smoke-Passed` | TPM | Production smoke tests passed |
-| `In-Production` | TPM | Live in production, issue state set to **Done** |
-
-### Default Flow -- XS/S (1-2 pts, no `staging-required`)
-
-```
-PR-Ready -> Testing -> Tests-Passed -> Locally-Tested -> Human-Verified (auto) -> In-Production
-(PR->main)                              |                  |                          |
-                                  chrome CUJ pass     /workon auto-adds       TPM merges PR to main
-              |                                                               TPM runs prod smoke test
-         Tests-Failed (back to Builder)                                       TPM sets issue state -> Done
-```
-
-### Default Flow -- M+ (3+ pts, no `staging-required`)
-
-```
-PR-Ready -> Testing -> Tests-Passed -> Locally-Tested -> Human-Verified -> In-Production
-(PR->main)                              |                  |                    |
-                                  chrome CUJ pass     human adds label    TPM merges PR to main
-              |                                                           TPM runs prod smoke test
-         Tests-Failed (back to Builder)                                   TPM sets issue state -> Done
-```
-
-### Staging-Required Flow (XL + `staging-required` label)
-
-```
-PR-Ready -> Testing -> Tests-Passed -> Staging-Tested -> Human-Verified
-(PR #1         |         (staging)    (staging)          (staging)
-->staging)     |
-          Tests-Failed                                       |
-          (back to Builder)                                  v
-                                                   TPM creates PR #2 -> main
-                                                             |
-                                                             v
-                                                   TPM merges PR #2 to main
-                                                             |
-                                                             v
-                                                   TPM runs prod smoke test
-                                                             |
-                                                             v
-                                                   In-Production
-                                                             |
-                                                             v
-                                                   TPM rebases staging on main
-```
-
----
-
-## Workflow Scenarios
-
-### Happy Path - Default XS/S (1-2 pts, no `staging-required`)
-
-| Step | Agent | Action | Environment |
-|------|-------|--------|-------------|
-| 1 | **PM** | Creates issue with epic, size, CUJs, test plan | - |
-| 2 | **Builder** | Implements + E2E tests (S+), **rebases on main**, creates PR -> `main` | localhost |
-| 3 | Deploy | Start local dev server, verify health | localhost:3000 |
-| 4 | **Tester** | Runs smoke test against localhost | localhost:3000 |
-| 5 | **Tester** | Runs automated E2E tests | localhost:3000 |
-| 5.5 | **Tester** | Code review via `GetWorkspaceDiff` + `DiffComment` | - |
-| 6 | **Tester** | Walks CUJs in Chrome, verifies visually | localhost:3000 |
-| 7 | **Tester** | Passes -> adds `Locally-Tested`, posts human checklist | - |
-| 8 | **/workon** | Auto-adds `Human-Verified` (XS/S -- no human gate) | - |
-| 9 | **TPM** | Auto-merges PR to main (on `/tpm sync`) | Production |
-| 10 | **TPM** | Waits for deploy, runs production smoke test | Production |
-| 11 | **TPM** | Adds `In-Production`, marks Done | - |
-
-### Happy Path - Default M+ (3+ pts, no `staging-required`)
-
-| Step | Agent | Action | Environment |
-|------|-------|--------|-------------|
-| 1 | **PM** | Creates issue with epic, size, CUJs, test plan | - |
-| 2 | **Builder** | Implements + E2E tests, **rebases on main**, creates PR -> `main` | localhost |
-| 3 | Deploy | Start local dev server, verify health | localhost:3000 |
-| 4 | **Tester** | Runs smoke test against localhost | localhost:3000 |
-| 5 | **Tester** | Runs automated E2E tests | localhost:3000 |
-| 5.5 | **Tester** | Code review via `GetWorkspaceDiff` + `DiffComment` | - |
-| 6 | **Tester** | Walks CUJs in Chrome, verifies visually | localhost:3000 |
-| 7 | **Tester** | Passes -> adds `Locally-Tested`, posts human checklist | - |
-| 8 | **Human** | Verifies external-system items, adds `Human-Verified` | localhost:3000 |
-| 9 | **TPM** | Auto-merges PR to main (on `/tpm sync`) | Production |
-| 10 | **TPM** | Waits for deploy, runs production smoke test | Production |
-| 11 | **TPM** | Adds `In-Production`, marks Done | - |
-
-### Happy Path - Staging-Required (XL + `staging-required`)
-
-| Step | Agent | Action | Environment |
-|------|-------|--------|-------------|
-| 1 | **PM** | Creates issue with epic, size, CUJs, test plan, adds `staging-required` label | - |
-| 2 | **Builder** | Implements + E2E tests, **rebases on main**, creates PR #1 -> `staging` | localhost |
-| 3 | Deploy | Wait for staging deploy, health check | {{STAGING_URL}} |
-| 4 | **Tester** | Runs deployment smoke test against staging | {{STAGING_URL}} |
-| 5 | **Tester** | Runs automated E2E tests | {{STAGING_URL}} |
-| 5.5 | **Tester** | Code review via `GetWorkspaceDiff` + `DiffComment` | - |
-| 6 | **Tester** | Walks CUJs in Chrome, verifies visually, records GIFs | {{STAGING_URL}} |
-| 7 | **Tester** | Passes -> adds `Staging-Tested`, posts human checklist | - |
-| 8 | **Human** | Verifies external-system items on staging, adds `Human-Verified` | {{STAGING_URL}} |
-| 9 | **TPM** | Creates PR #2 -> main, merges (on `/tpm sync`) | Production |
-| 10 | **TPM** | Waits for deploy, runs production smoke test | Production |
-| 11 | **TPM** | Adds `In-Production`, rebases staging on main | - |
-
-### Test Failure / Code Review Failure (Auto-Fix Loop)
-
-```
-Tester -> FAIL (tests or CRITICAL/HIGH code review findings)
-           -> Auto-spawn Builder -> Fix -> Push -> Orchestrator re-invokes Tester -> PASS
-                                                                                  -> FAIL (attempt 2) -> repeat
-                                                                                                      -> FAIL (attempt 3) -> Escalate to human
-```
-
-### Production Smoke Test Failure
-
-| Step | Action |
+| Size | Engine |
 |------|--------|
-| 1 | **TPM** merges PR to main, runs smoke tests |
-| 2 | Smoke tests fail |
-| 3 | **TPM** reverts merge (`git revert HEAD && git push`) |
-| 4 | **Builder** investigates and fixes on feature branch |
-| 5 | Workflow restarts from testing |
+| XS | Builder writes the change directly |
+| S | Builder writes the change directly |
+| M | OMC team pipeline with 2 parallel executor workers |
+| L | OMC team pipeline with 3 parallel executor workers |
+| XL | OMC team pipeline with Ralph persistence loop (auto-retry on verification failure) |
 
 ---
 
-## Verification Responsibilities
+## 5. Deployment Environments
 
-### What the Tester Agent Verifies (Chrome MCP)
+### 5.1 Development (Local)
 
-**After automated E2E tests pass**, the Tester agent uses `mcp__claude-in-chrome__*` to verify UI state, console errors, network health, and visual rendering. These items do NOT require human eyes.
+- **URL:** http://localhost:3100
+- **Purpose:** Local development and initial testing
+- **How to start:** `pnpm dev`
+- **Database:** Embedded PostgreSQL (auto-managed at `~/.paperclip/instances/default/db/`)
+- **Who uses it:** Builder (implementation), Tester (E2E tests and Chrome CUJ for default-path issues)
+- **Notes:** Never use the `claude` CLI for local LLM testing -- use the `minimax` adapter instead. See CLAUDE.md for details.
 
-| Category | Agent Verifies via Chrome MCP |
-|----------|------------------------------|
-| UI Rendering | Pages load, elements visible, layout correct |
-| Forms | Submit correctly, validation works |
-| Navigation | Routing works, no broken links |
-| Console | No JavaScript errors |
-| Network | No failed API requests |
-| Responsive | Mobile/tablet/desktop layouts |
-| Auth | Login/logout gates work correctly |
+### 5.2 CI (GitHub Actions)
 
-### Human Verification Checklist
+- **Purpose:** Automated quality gates on every PR
+- **What runs:** `pnpm -r typecheck && pnpm test:run && pnpm build`
+- **Gate rule:** All PRs must pass CI before any review (agent or human) begins. PRs with failing CI are not eligible for the Tester pipeline.
+- **Who uses it:** Triggered automatically on PR creation and push. Tester checks CI status before starting.
 
-**After `Locally-Tested` or `Staging-Tested` is set**, the Tester posts a minimal checklist containing ONLY items the agent cannot verify -- external systems, subjective quality, or third-party auth.
+### 5.3 Staging
 
-| Category | Human-Only Items | Why Human-Only |
-|----------|-----------------|----------------|
-| Payments | Dashboard transactions visible | External authenticated site |
-| Email | Emails arrive in inbox | Mailbox access required |
-| Webhooks | Third-party processing completes | External system verification |
-| AI Quality | Generated content quality acceptable | Subjective judgment |
-| OAuth | Popup completes successfully | Bot detection |
+- **URL:** Configured via environment (per LAUNCH.md)
+- **Purpose:** Pre-production verification for high-risk changes
+- **Deploys:** Auto-deploy on merge to staging branch (staging-required XL issues only)
+- **Who uses it:** Tester (staging-path E2E tests and Chrome CUJ), human reviewers for `staging-required` issues
+- **Gate rule:** `Staging-Tested` label required before promotion to production. For M+ sizes, human must also add `Human-Verified`.
 
----
+### 5.4 Production
 
-## Epic & CUJ System
+- **URL:** Configured via environment (per LAUNCH.md)
+- **Purpose:** Live customer-facing environment
+- **Deploys:** On merge to main (only TPM merges to main)
+- **Who uses it:** End users, Admin agent (health monitoring)
+- **Gate rule:** Production deploys require staging verification first for staging-required issues. TPM runs smoke tests after every deploy and reverts immediately on failure.
 
-All issues must be tagged with epics and CUJs for scoped testing. Customize these for your project.
+### 5.5 Edge Instances (OTA)
 
-**Epic Labels (examples -- replace with yours):**
+- **Purpose:** Distributed instances that receive over-the-air updates from production
+- **Update mechanism:** OTA from production after production health check is green
+- **Gate rule:** OTA updates only proceed when the production health check returns 200. TPM coordinates OTA timing. No OTA push during active production incidents.
 
-- `epic:auth` - Authentication and session management
-- `epic:billing` - Payments, subscriptions, invoicing
-- `epic:core` - Core product features
-- `epic:admin` - Admin tools, analytics
+### Deployment Path Summary
 
-**CUJ Format:** `#cuj-name` (e.g., `#auth-login`, `#pay-checkout`, `#core-create`)
-
-**Reference:** See `docs/EPIC_REGISTRY.md` for the full epic/CUJ registry template.
-
----
-
-## Branch-Based Deployment
-
-| Branch | Deploys To |
-|--------|------------|
-| PR branch | Auto-deploy (testing on localhost:3000) |
-| `staging` | Staging environment |
-| `main` | Production environment |
-
-**Deployment Rules by Path:**
-
-| Path | Condition | PR Flow | Testing Environment |
-|------|-----------|---------|---------------------|
-| Default | All sizes, no `staging-required` | Single PR -> `main` | localhost:3000 |
-| Staging | XL + `staging-required` label | PR #1 -> `staging`, PR #2 -> `main` | {{STAGING_URL}} |
-
-**Critical Rules:**
-
-- Builder **rebases feature branch on `main`** before creating any PR
-- **TPM is the ONLY agent that merges to `main`**
-- **No bulk `staging` -> `main` merges** -- each feature gets its own PR to `main`
-- After production deploy (staging-required only): TPM **rebases `staging` on `main`**
+| Condition | PR Target | Test Environment | Quality Gate | Human Gate |
+|-----------|-----------|-----------------|--------------|------------|
+| XS/S, no `staging-required` | main | localhost:3100 | `Locally-Tested` | None (auto-ship) |
+| M, no `staging-required` | main | localhost:3100 | `Locally-Tested` | Human spot-check |
+| L, no `staging-required` | main | localhost:3100 | `Locally-Tested` | Human mandatory |
+| XL + `staging-required` | staging | staging URL | `Staging-Tested` | Human mandatory |
 
 ---
 
-## Quick Reference
+## 6. Entry Points
 
-| Task | Command |
-|------|---------|
-| **Start any issue** | `/workon {{ISSUE_PREFIX}}-XXX` |
-| Skip to Builder | `/builder {{ISSUE_PREFIX}}-XXX` |
-| Test a PR | `/tester {{ISSUE_PREFIX}}-XXX` |
-| Ship after Human-Verified | `/tpm sync` |
-| Project planning | `/tpm <project description>` |
-| Check status | `/tpm status` |
-| Check service health | `/admin health` |
+There are multiple ways to feed work into the MAW pipeline. All of them converge on the same Linear-driven state machine.
+
+### 6.1 Linear Directly
+
+Create an issue in the AgentDash team on Linear. Set it to `Todo` status. The orchestrator (or Contractor, see below) picks it up from the queue.
+
+- **Best for:** Product managers, designers, stakeholders filing feature requests or bug reports.
+- **What happens:** The issue enters the pipeline at the PM phase. PM elaborates requirements, sets size, and hands off to Builder.
+
+### 6.2 CLI (`/workon`)
+
+In a Claude Code terminal session:
+
+```
+/workon AGE-123
+```
+
+This invokes the Orchestrator, which fetches the issue from Linear and routes it through the full pipeline.
+
+- **Best for:** Engineers who want to drive a specific issue through the pipeline from their terminal.
+- **Variants:** `/workon 123` (assumes AGE-123 prefix).
+
+### 6.3 Individual Agent Commands
+
+For targeted interventions when you need to invoke a specific agent directly:
+
+| Command | What it does |
+|---------|-------------|
+| `/pm <description>` | Elaborate requirements and create/update a Linear issue |
+| `/builder AGE-123` | Implement a specific issue (skips PM phase) |
+| `/tester AGE-123` | Run the Tester workflow on a specific issue |
+| `/tpm sync` | Ship all `Human-Verified` issues to production |
+| `/tpm status` | Read-only dashboard of all issue states |
+| `/admin health` | Check service health across environments |
+
+### 6.4 Claude Code Desktop
+
+The same slash commands (`/workon`, `/pm`, `/builder`, `/tester`, `/tpm`, `/admin`) work in Claude Code desktop sessions. No difference in behavior from the CLI.
+
+### 6.5 Contractor (Anthropic Cloud Agent)
+
+Contractor is Anthropic's cloud-hosted agent. It connects to Linear via webhook and picks up issues from the Todo queue automatically.
+
+- **Best for:** Unattended development. File an issue in Linear, Contractor handles the rest.
+- **How it works:** Linear webhook fires on issue creation/update -> Contractor evaluates the issue -> runs the same PM -> Builder -> Tester pipeline as `/workon`.
+- **Limitation:** Contractor cannot perform Chrome CUJ verification (no browser). It handles automated tests and code review only. Browser-based verification falls to a local agent or human.
+
+### 6.6 Any MCP-Connected Tool
+
+Any tool with the Linear MCP connected (Cursor, Codex, OpenCode, etc.) can create Linear issues or read issue state. The pipeline is Linear-native -- it does not depend on which tool created the issue.
+
+- **Best for:** Teams using mixed tooling. Everyone files to Linear; agents pick up from the same queue.
+- **Requirement:** The tool must have Linear MCP configured to read/write issues and labels.
 
 ---
 
-## Tools & Integrations
+## 7. Safety Rules
 
-### MCP Tools
+These rules are non-negotiable. Violation of any rule requires a post-incident review.
 
-| MCP Server | Purpose |
-|------------|---------|
-| **Linear** | Issue tracking, labels, comments, workflow state |
-| **GitHub** | PRs, code review, merges |
-| **Claude-in-Chrome** | Browser automation for Chrome CUJ verification |
-| **Conductor** | `GetWorkspaceDiff`, `DiffComment`, `AskUserQuestion` |
+### 7.1 Concurrency
+
+- **One agent per issue at a time.** The orchestrator checks labels before dispatching. If an issue has `Testing` label, no Builder can be dispatched to it. If it has a linked in-progress PR, no second Builder starts.
+- **Sequential merge protocol.** TPM completes the full ship cycle for one PR (merge -> deploy -> health check -> smoke test -> Linear update) before starting the next. No parallel merges to main.
+
+### 7.2 Merge Authority
+
+- **TPM is the sole merge authority to main.** No other agent -- Builder, Tester, PM, Admin, Orchestrator -- may merge a PR to main. This is enforced by convention and documented in every agent's command file.
+- **No force pushes to main.** Force pushes to main are prohibited for all agents and humans. Force-with-lease is permitted on feature branches and staging only.
+
+### 7.3 CI and Review Gates
+
+- **All PRs must pass CI before review.** A PR with failing CI is not eligible for Tester pickup, agent review, or human review. Fix CI first.
+- **All PRs must pass the mandatory regression suite.** Builder runs `pnpm -r typecheck && pnpm test:run && pnpm build` before creating a PR. Tester re-runs the same suite before starting issue-specific tests. Both must pass.
+- **Code review is mandatory for all sizes.** XS/S get agent review (as part of Tester). M+ get agent review plus human involvement (spot-check for M, mandatory for L/XL).
+
+### 7.4 Production Deployment
+
+- **Production deploys for staging-required issues require staging verification first.** The `Staging-Tested` label must be present before TPM creates the production PR.
+- **Smoke tests run after every production deploy.** TPM runs production smoke tests immediately after deployment. Failure triggers an immediate revert (`git revert HEAD`).
+- **Health checks bracket every deploy.** TPM checks health before merge (to confirm a clean baseline) and after deployment (to confirm the change did not break anything).
+
+### 7.5 OTA Updates
+
+- **OTA updates require production health check green.** No OTA push proceeds if the production health endpoint returns non-200.
+- **No OTA during active incidents.** If production smoke tests have failed and a revert is in progress, OTA is paused until health is restored.
+
+### 7.6 Retry and Escalation
+
+- **Max 2 Builder fix attempts per test failure.** After 2 failed fix cycles (Tester -> Builder -> Tester -> Builder -> Tester -> fail), the issue escalates to a human. No infinite loops.
+- **UltraQA cycles do not count against the retry budget.** UltraQA's internal 5-cycle auto-fix loop is a single Tester pass. The 2-retry limit applies to full Tester -> Builder round-trips.
+- **Size defaults to M when unclear.** If the orchestrator or PM cannot determine size, it defaults to M. This ensures a test plan is written and human review is available. Safer to over-test than under-test.
+
+### 7.7 Data Safety
+
+- **No destructive database operations without explicit human confirmation.** Admin agent uses read-only queries. Any DELETE, UPDATE, or schema change on production requires a human to confirm in chat.
+- **No secrets in PRs.** Builder and Tester check for exposed secrets, API keys, and credentials in diffs. Any finding at CRITICAL severity blocks the PR.
 
 ---
 
-## Safety Rules
+## Quick Reference Card
 
-### NEVER:
+### Issue Lifecycle Labels
 
-1. **Merge to `main` unless you are the TPM agent** -- TPM is the ONLY merge authority
-2. Do bulk `staging` -> `main` merges -- each feature gets its own PR to `main`
-3. Deploy to production without `Human-Verified` label
-4. Skip testing -- every PR must pass automated + Chrome CUJ verification
-5. **Skip smoke tests after any deployment** -- every deployment gets a smoke test
-6. Auto-fix production issues
-7. Run DELETE/UPDATE on production database without confirmation
-8. Create a PR without rebasing feature branch on `main` first
+| Label | Set By | Meaning | Next Step |
+|-------|--------|---------|-----------|
+| *(none)* | -- | Needs elaboration | PM sets size and writes AC |
+| `PR-Ready` | Builder | Implementation complete | Tester picks up |
+| `Testing` | Tester | Tester is active | Wait |
+| `Tests-Passed` | Tester | Automated tests passed | Tester continues to Chrome CUJ |
+| `Tests-Failed` | Tester | Failures found | Builder auto-spawned for fix (max 2x) |
+| `Locally-Tested` | Tester | All verification passed (direct path) | Human gate (M+) or auto-ship (XS/S) |
+| `Staging-Tested` | Tester | All verification passed (staging path) | Human adds `Human-Verified` |
+| `Human-Verified` | Human or Auto | Approved for production | TPM ships on next `/tpm sync` |
+| `Prod-Smoke-Passed` | TPM | Production smoke tests passed | -- |
+| `In-Production` | TPM | Live in production | Done |
 
-### ALWAYS:
+### Common Commands
 
-1. **Rebase feature branch on `main`** before creating any PR
-2. **Wait for deployments to finish** before running smoke tests
-3. **Run smoke tests after every deployment** -- staging and production, no exceptions
-4. Run health checks before/after deployments
-5. Document actions in Linear
-6. Wait for each deployment to complete before next
-7. Have rollback command ready
-8. TPM rebases `staging` on `main` after production deploy (staging-required only)
-9. **Builder writes E2E tests for S+ features**
-10. **Tester performs code review before Chrome CUJ verification** -- uses `GetWorkspaceDiff` + `DiffComment`
-
----
-
-## Related Documentation
-
-- [protocol.md](./protocol.md) - Agent communication protocol (handoffs, schemas, state machine)
-- [EPIC_REGISTRY.md](./EPIC_REGISTRY.md) - Epic/CUJ registry template
-- [MANUAL_TESTING_GUIDE.md](./MANUAL_TESTING_GUIDE.md) - Manual testing guide template
+| Command | Purpose |
+|---------|---------|
+| `/workon AGE-123` | Full pipeline: PM -> Builder -> Tester -> ship |
+| `/tpm sync` | Ship all verified issues, display dashboard |
+| `/tpm status` | Read-only summary of all issues |
+| `/admin health` | Check service health across environments |
+| `/pm fix the login bug` | Elaborate requirements into a Linear issue |
+| `/builder AGE-123` | Implement a specific issue directly |
+| `/tester AGE-123` | Test a specific issue directly |
