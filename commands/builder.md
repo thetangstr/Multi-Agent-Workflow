@@ -35,19 +35,32 @@ You are the **Builder Agent** -- responsible for picking up Linear issues, plann
 
 ## Phase 1: Issue Pickup
 
+### 1.0 Read the loop log (compounding context)
+
+Before touching the issue, read the last few entries of the shared work log so you inherit
+cross-issue context (what just shipped, known frictions, in-flight decisions):
+
+```bash
+tail -r loops/LOG.md | awk '{print} /^## 20/{c++; if(c==8) exit}' | tail -r
+```
+
+Also skim open signals relevant to this area (`ls loops/signals/` then read any that match the
+issue's domain). This is what makes the pipeline compound instead of starting cold each run. See
+`loops/README.md`.
+
 ### 1.1 Fetch the Issue
 
-If a specific issue was provided (e.g., `/builder {{ISSUE_PREFIX}}-123`):
+If a specific issue was provided (e.g., `/builder AGE-123`):
 ```
 Use mcp__linear__get_issue with:
-- id: "{{ISSUE_PREFIX}}-123"
+- id: "AGE-123"
 - includeRelations: true
 ```
 
 If no specific issue, find the highest-priority ready issue:
 ```
 Use mcp__linear__list_issues with:
-- team: "{{TEAM_NAME}}"
+- team: "AgentDash"
 - status: "In Progress"
 - limit: 20
 ```
@@ -89,14 +102,42 @@ Use mcp__linear__save_comment with:
 - body: "## Builder Started\n\nClaimed at <timestamp>.\nSize: <size>\nApproach: Architect/Editor split."
 ```
 
-### 1.4 Create Feature Branch
+### 1.4 Verify Worktree (or Create Feature Branch)
+
+**Worktree mode (default):** The orchestrator has already created a worktree and placed you in it. Verify you are in the correct location:
+
+```bash
+# Verify we're in a worktree, not the main working tree
+WORKTREE_DIR="$(pwd)"
+MAIN_WORKTREE="$(git rev-parse --path-format=absolute --git-common-dir | sed 's|/.git$||')"
+
+if [ "$WORKTREE_DIR" = "$MAIN_WORKTREE" ]; then
+    echo "WARNING: Running in main worktree. Creating worktree for isolation..."
+    WORKTREE_BASE="$(dirname $MAIN_WORKTREE)/agentdash-worktrees"
+    mkdir -p "$WORKTREE_BASE"
+    BRANCH="feat/AGE-<number>-<slug>"
+    git fetch origin main
+    git worktree add "$WORKTREE_BASE/AGE-<number>" -b "$BRANCH" origin/main
+    cd "$WORKTREE_BASE/AGE-<number>"
+    pnpm install
+else
+    echo "Worktree confirmed: $WORKTREE_DIR"
+    echo "Branch: $(git branch --show-current)"
+fi
+```
+
+**Fallback (no orchestrator):** If invoked directly via `/builder AGE-123` without a worktree, create one:
 
 ```bash
 git fetch origin main
-git checkout -b feat/{{ISSUE_PREFIX}}-<number>-<slug> origin/main
+git worktree add ~/Projects/agentdash-worktrees/AGE-<number> -b feat/AGE-<number>-<slug> origin/main
+cd ~/Projects/agentdash-worktrees/AGE-<number>
+pnpm install
 ```
 
-Branch naming: `feat/{{ISSUE_PREFIX}}-<number>-<slug>` where `<slug>` is a 2-4 word kebab-case summary (e.g., `feat/AGE-123-add-billing`).
+Branch naming: `feat/AGE-<number>-<slug>` where `<slug>` is a 2-4 word kebab-case summary (e.g., `feat/AGE-123-connector-framework`).
+
+> **CRITICAL:** Never modify the main worktree (`~/Projects/agentdash/`). All implementation happens in the issue worktree.
 
 ---
 
@@ -218,11 +259,11 @@ Work through `steps` in order, respecting `depends_on`:
 
 Commit message format:
 ```
-feat({{ISSUE_PREFIX}}-<number>): <description>
+feat(AGE-<number>): <description>
 ```
 or for fixes during the auto-fix loop:
 ```
-fix({{ISSUE_PREFIX}}-<number>): <what was fixed>
+fix(AGE-<number>): <what was fixed>
 ```
 
 ### 3.2 Write Tests
@@ -254,6 +295,16 @@ Run the mandatory regression suite. This is non-negotiable -- do NOT create a PR
 ```bash
 pnpm -r typecheck && pnpm test:run && pnpm build
 ```
+
+Also run the architectural golden-rule check (fast, pure-node; same gate CI enforces):
+
+```bash
+pnpm check:architecture
+```
+
+`error`-severity findings block the PR -- fix them (each message includes the remediation).
+`warn`-severity findings (e.g. legacy `paperclip:*` localStorage keys) don't block, but don't
+add new ones.
 
 ### 3.4 Auto-Fix Loop (Local Failures)
 
@@ -292,15 +343,15 @@ git rebase origin/main
 ### 4.2 Push and Create PR
 
 ```bash
-git push -u origin feat/{{ISSUE_PREFIX}}-<number>-<slug>
+git push -u origin feat/AGE-<number>-<slug>
 ```
 
 Create the PR with a structured description:
 
 ```bash
-gh pr create --base main --title "{{ISSUE_PREFIX}}-<number>: <title>" --body "$(cat <<'EOF'
+gh pr create --base main --title "AGE-<number>: <title>" --body "$(cat <<'EOF'
 ## Summary
-Closes {{ISSUE_PREFIX}}-<number>
+Closes AGE-<number>
 
 <1-3 sentence description of what this PR does and why>
 
@@ -328,7 +379,7 @@ EOF
 
 For **staging-required** issues (XL + `staging-required` label), target `staging` instead:
 ```bash
-gh pr create --base staging --title "{{ISSUE_PREFIX}}-<number>: <title>" --body "..."
+gh pr create --base staging --title "AGE-<number>: <title>" --body "..."
 ```
 
 ### 4.3 Update Linear Labels
@@ -358,10 +409,10 @@ The attachment metadata contains the structured JSON payload:
   "type": "builder_to_ci",
   "version": "6.0",
   "timestamp": "<ISO 8601>",
-  "issue_id": "{{ISSUE_PREFIX}}-<number>",
-  "pr_url": "https://github.com/{{GITHUB_REPO}}/pull/<number>",
+  "issue_id": "AGE-<number>",
+  "pr_url": "https://github.com/thetangstr/agentdash/pull/<number>",
   "pr_number": <number>,
-  "branch": "feat/{{ISSUE_PREFIX}}-<number>-<slug>",
+  "branch": "feat/AGE-<number>-<slug>",
   "base_branch": "main",
   "files_changed": ["<file1>", "<file2>", "..."],
   "test_commands": [
@@ -384,8 +435,29 @@ Post a human-readable summary comment referencing the structured attachment:
 ```
 Use mcp__linear__save_comment with:
 - issueId: <issue_id>
-- body: "## PR Created\n\n**PR:** <pr_url>\n**Branch:** feat/{{ISSUE_PREFIX}}-<number>-<slug>\n**Files changed:** <count>\n**Local verification:** typecheck pass, tests pass, build pass\n\nStructured handoff stored as attachment `handoff:builder_to_ci`.\nWaiting for CI."
+- body: "## PR Created\n\n**PR:** <pr_url>\n**Branch:** feat/AGE-<number>-<slug>\n**Files changed:** <count>\n**Local verification:** typecheck pass, tests pass, build pass\n\nStructured handoff stored as attachment `handoff:builder_to_ci`.\nWaiting for CI."
 ```
+
+### 4.5 Update the loop log + file signals (compounding output)
+
+Append ONE entry to the shared work log so the next loop inherits what you did. Commit it on the
+feature branch (it ships with the PR):
+
+```bash
+cat >> loops/LOG.md <<'EOF'
+
+## <YYYY-MM-DD> · AGE-<number>: <short title> · #maw #feature
+What: <one line, outcome first — what now works>.
+Refs: AGE-<number>, PR #<number>.
+EOF
+git add loops/LOG.md && git commit --amend --no-edit   # or a fresh commit; keep it on the branch
+```
+
+If during the build you noticed anything that wasn't this issue -- a recurring bug, a confusing
+flow, a missed opportunity, a flaky test -- **file or bump a signal** under `loops/signals/`
+(see its README for the schema) and link `AGE-<number>`. Don't drop it; that friction is exactly
+what lets the product/SEO/support loops cross-pollinate. A run that found nothing worth filing is
+a valid run -- only create a signal if there's a real one.
 
 ---
 
@@ -426,7 +498,7 @@ if current_attempt >= max_retries[failure_source]:
 
 ```bash
 git add <specific-files>
-git commit -m "fix({{ISSUE_PREFIX}}-<number>): <what was fixed>"
+git commit -m "fix(AGE-<number>): <what was fixed>"
 git push
 ```
 
@@ -448,7 +520,7 @@ With payload:
   "type": "builder_fix_report",
   "version": "6.0",
   "timestamp": "<ISO 8601>",
-  "issue_id": "{{ISSUE_PREFIX}}-<number>",
+  "issue_id": "AGE-<number>",
   "fix_attempt": <N>,
   "max_attempts": <3 for ci, 2 for tests>,
   "failure_source": "<ci|tests>",
@@ -462,7 +534,7 @@ With payload:
   "commits": [
     {
       "sha": "<sha>",
-      "message": "fix({{ISSUE_PREFIX}}-<number>): <description>"
+      "message": "fix(AGE-<number>): <description>"
     }
   ],
   "local_verification": {
@@ -513,7 +585,7 @@ For each comment:
 
 ```bash
 git add <specific-files>
-git commit -m "fix({{ISSUE_PREFIX}}-<number>): address review feedback"
+git commit -m "fix(AGE-<number>): address review feedback"
 git push
 ```
 

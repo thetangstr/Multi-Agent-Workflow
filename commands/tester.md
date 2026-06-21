@@ -18,19 +18,28 @@ The Tester Agent is part of a 4-agent workflow:
 
 ## Phase 1: Test Pickup
 
+### 1.0 Read the loop log
+
+Read the last few work-log entries for cross-issue context before testing (known frictions,
+related changes that just shipped):
+
+```bash
+tail -r loops/LOG.md | awk '{print} /^## 20/{c++; if(c==8) exit}' | tail -r
+```
+
 ### 1.1 Fetch Issue from Linear
 
-If a specific issue was provided (e.g., `/tester {{ISSUE_PREFIX}}-5`):
+If a specific issue was provided (e.g., `/tester AGE-5`):
 ```
 Use mcp__linear__get_issue with:
-- id: "{{ISSUE_PREFIX}}-5"
+- id: "AGE-5"
 - includeRelations: true
 ```
 
 If no issue ID given, find the oldest `PR-Ready` issue:
 ```
 Use mcp__linear__list_issues with:
-- team: "{{TEAM_NAME}}"
+- team: "AgentDash"
 - label: "PR-Ready"
 - limit: 5
 ```
@@ -128,6 +137,28 @@ pnpm exec playwright test <spec_file_path>
 # For XL: run the full E2E suite
 pnpm exec playwright test
 ```
+
+**Capture video proof.** Run the UI specs with video recording on so there's a watchable artifact
+of the feature working (the recording is the proof, far faster for a human to review than reading
+a pass log):
+
+```bash
+PWVIDEO=on pnpm exec playwright test --grep @<epic>   # or set `video: 'on'` in the e2e config's `use`
+```
+
+Then publish the clip to a stable, reviewable URL and capture the link for the handoff. GitHub
+can't play video inline from an automated PR body, so upload it to the dedicated `pr-evidence`
+prerelease:
+
+```bash
+# one-time: gh release create pr-evidence --prerelease --title "PR evidence" --notes "CUJ/e2e proof clips"
+VIDEO=$(ls -t tests/e2e/test-results/**/video.webm | head -1)
+gh release upload pr-evidence "$VIDEO" --clobber \
+  && PROOF_URL="https://github.com/thetangstr/agentdash/releases/download/pr-evidence/$(basename "$VIDEO")"
+```
+
+Record `PROOF_URL` for the handoff (§5.1) and the PR. (GIFs from Chrome CUJ verification in
+Phase 4 are still fine for quick visual checks; the e2e video is the durable proof.)
 
 ### 2.4 Collect Structured Results
 
@@ -368,6 +399,18 @@ cuj_verification:
 
 ### 5.1 If ALL Pass: Structured Handoff to Reviewer
 
+Append ONE line to the shared work log (commit on the PR branch) so the next loop inherits the
+verification outcome:
+
+```bash
+cat >> loops/LOG.md <<'EOF'
+
+## <YYYY-MM-DD> · AGE-<number> verified · #maw #test
+What: Tester PASS — typecheck/unit/build/e2e green, CUJs verified.
+Refs: AGE-<number>, PR #<number>, proof: <PROOF_URL>.
+EOF
+```
+
 Update Linear labels: add `Tests-Passed`, remove `Testing`.
 
 ```
@@ -390,7 +433,7 @@ Use mcp__linear__save_comment with:
     | Typecheck | PASS | 0 errors |
     | Unit Tests | PASS | <pass>/<total> passed, <skip> skipped |
     | Build | PASS | Clean |
-    | Playwright | PASS (or SKIPPED) | <pass>/<total> passed |
+    | Playwright | PASS (or SKIPPED) | <pass>/<total> passed · 📹 [proof](<PROOF_URL>) |
 
     ### Code Review Findings
     | Severity | Count |
@@ -426,7 +469,7 @@ Use mcp__linear__save_comment with:
     ```json
     {
       "type": "tester_to_reviewer",
-      "issue": "{{ISSUE_PREFIX}}-<number>",
+      "issue": "AGE-<number>",
       "pr": <pr_number>,
       "branch": "<branch>",
       "test_results": {
@@ -519,7 +562,7 @@ Use mcp__linear__save_comment with:
     ```json
     {
       "type": "tester_to_builder",
-      "issue": "{{ISSUE_PREFIX}}-<number>",
+      "issue": "AGE-<number>",
       "test_results": {
         "typecheck": "pass",
         "unit_tests": { "pass": 38, "fail": 2, "skip": 1 },
@@ -569,9 +612,9 @@ Scan issue comments for previous `## Tester Results: FAIL` headings. Count them.
 ```
 Use Task tool with:
 - subagent_type: "general-purpose"
-- description: "Builder fix for {{ISSUE_PREFIX}}-<number>"
+- description: "Builder fix for AGE-<number>"
 - prompt: |
-    You are the **Builder Agent** fixing test failures for {{ISSUE_PREFIX}}-<number>.
+    You are the **Builder Agent** fixing test failures for AGE-<number>.
 
     ## What Failed
     <paste the failures JSON from the handoff attachment>
